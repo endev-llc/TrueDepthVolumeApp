@@ -7,8 +7,9 @@
 
 import SwiftUI
 
+// MARK: - Main SwiftUI View
 @main
-struct landing_page_mockupsApp: App {
+struct TrueDepthVolumeApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
