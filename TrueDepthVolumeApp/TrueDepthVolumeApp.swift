@@ -1,6 +1,6 @@
 //
-//  landing_page_mockupsApp.swift
-//  landing-page-mockups
+//  TrueDepthVolumeApp.swift
+//  TrueDepthVolumeApp
 //
 //  Created by Jake Adams on 6/16/25.
 //

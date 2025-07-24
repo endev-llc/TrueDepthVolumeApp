@@ -24,25 +24,15 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		577987582E00A42E006E5AD3 /* landing-page-mockups.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "landing-page-mockups.app"; sourceTree = BUILT_PRODUCTS_DIR; };
-		577987652E00A430006E5AD3 /* landing-page-mockupsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "landing-page-mockupsTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
-		5779876F2E00A430006E5AD3 /* landing-page-mockupsUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "landing-page-mockupsUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		577987582E00A42E006E5AD3 /* TrueDepthVolumeApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TrueDepthVolumeApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		577987652E00A430006E5AD3 /* TrueDepthVolumeAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TrueDepthVolumeAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		5779876F2E00A430006E5AD3 /* TrueDepthVolumeAppUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TrueDepthVolumeAppUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		5779875A2E00A42E006E5AD3 /* landing-page-mockups */ = {
+		5779875A2E00A42E006E5AD3 /* TrueDepthVolumeApp */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "landing-page-mockups";
-			sourceTree = "<group>";
-		};
-		577987682E00A430006E5AD3 /* landing-page-mockupsTests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "landing-page-mockupsTests";
-			sourceTree = "<group>";
-		};
-		577987722E00A430006E5AD3 /* landing-page-mockupsUITests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "landing-page-mockupsUITests";
+			path = TrueDepthVolumeApp;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -75,9 +65,7 @@
 		5779874F2E00A42E006E5AD3 = {
 			isa = PBXGroup;
 			children = (
-				5779875A2E00A42E006E5AD3 /* landing-page-mockups */,
-				577987682E00A430006E5AD3 /* landing-page-mockupsTests */,
-				577987722E00A430006E5AD3 /* landing-page-mockupsUITests */,
+				5779875A2E00A42E006E5AD3 /* TrueDepthVolumeApp */,
 				577987592E00A42E006E5AD3 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -85,9 +73,9 @@
 		577987592E00A42E006E5AD3 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				577987582E00A42E006E5AD3 /* landing-page-mockups.app */,
-				577987652E00A430006E5AD3 /* landing-page-mockupsTests.xctest */,
-				5779876F2E00A430006E5AD3 /* landing-page-mockupsUITests.xctest */,
+				577987582E00A42E006E5AD3 /* TrueDepthVolumeApp.app */,
+				577987652E00A430006E5AD3 /* TrueDepthVolumeAppTests.xctest */,
+				5779876F2E00A430006E5AD3 /* TrueDepthVolumeAppUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -95,9 +83,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		577987572E00A42E006E5AD3 /* landing-page-mockups */ = {
+		577987572E00A42E006E5AD3 /* TrueDepthVolumeApp */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 577987792E00A430006E5AD3 /* Build configuration list for PBXNativeTarget "landing-page-mockups" */;
+			buildConfigurationList = 577987792E00A430006E5AD3 /* Build configuration list for PBXNativeTarget "TrueDepthVolumeApp" */;
 			buildPhases = (
 				577987542E00A42E006E5AD3 /* Sources */,
 				577987552E00A42E006E5AD3 /* Frameworks */,
@@ -108,18 +96,18 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				5779875A2E00A42E006E5AD3 /* landing-page-mockups */,
+				5779875A2E00A42E006E5AD3 /* TrueDepthVolumeApp */,
 			);
-			name = "landing-page-mockups";
+			name = TrueDepthVolumeApp;
 			packageProductDependencies = (
 			);
 			productName = "landing-page-mockups";
-			productReference = 577987582E00A42E006E5AD3 /* landing-page-mockups.app */;
+			productReference = 577987582E00A42E006E5AD3 /* TrueDepthVolumeApp.app */;
 			productType = "com.apple.product-type.application";
 		};
-		577987642E00A430006E5AD3 /* landing-page-mockupsTests */ = {
+		577987642E00A430006E5AD3 /* TrueDepthVolumeAppTests */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 5779877C2E00A430006E5AD3 /* Build configuration list for PBXNativeTarget "landing-page-mockupsTests" */;
+			buildConfigurationList = 5779877C2E00A430006E5AD3 /* Build configuration list for PBXNativeTarget "TrueDepthVolumeAppTests" */;
 			buildPhases = (
 				577987612E00A430006E5AD3 /* Sources */,
 				577987622E00A430006E5AD3 /* Frameworks */,
@@ -130,19 +118,16 @@
 			dependencies = (
 				577987672E00A430006E5AD3 /* PBXTargetDependency */,
 			);
-			fileSystemSynchronizedGroups = (
-				577987682E00A430006E5AD3 /* landing-page-mockupsTests */,
-			);
-			name = "landing-page-mockupsTests";
+			name = TrueDepthVolumeAppTests;
 			packageProductDependencies = (
 			);
 			productName = "landing-page-mockupsTests";
-			productReference = 577987652E00A430006E5AD3 /* landing-page-mockupsTests.xctest */;
+			productReference = 577987652E00A430006E5AD3 /* TrueDepthVolumeAppTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
-		5779876E2E00A430006E5AD3 /* landing-page-mockupsUITests */ = {
+		5779876E2E00A430006E5AD3 /* TrueDepthVolumeAppUITests */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 5779877F2E00A430006E5AD3 /* Build configuration list for PBXNativeTarget "landing-page-mockupsUITests" */;
+			buildConfigurationList = 5779877F2E00A430006E5AD3 /* Build configuration list for PBXNativeTarget "TrueDepthVolumeAppUITests" */;
 			buildPhases = (
 				5779876B2E00A430006E5AD3 /* Sources */,
 				5779876C2E00A430006E5AD3 /* Frameworks */,
@@ -153,14 +138,11 @@
 			dependencies = (
 				577987712E00A430006E5AD3 /* PBXTargetDependency */,
 			);
-			fileSystemSynchronizedGroups = (
-				577987722E00A430006E5AD3 /* landing-page-mockupsUITests */,
-			);
-			name = "landing-page-mockupsUITests";
+			name = TrueDepthVolumeAppUITests;
 			packageProductDependencies = (
 			);
 			productName = "landing-page-mockupsUITests";
-			productReference = 5779876F2E00A430006E5AD3 /* landing-page-mockupsUITests.xctest */;
+			productReference = 5779876F2E00A430006E5AD3 /* TrueDepthVolumeAppUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
 /* End PBXNativeTarget section */
@@ -186,7 +168,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 577987532E00A42E006E5AD3 /* Build configuration list for PBXProject "landing-page-mockups" */;
+			buildConfigurationList = 577987532E00A42E006E5AD3 /* Build configuration list for PBXProject "TrueDepthVolumeApp" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -200,9 +182,9 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				577987572E00A42E006E5AD3 /* landing-page-mockups */,
-				577987642E00A430006E5AD3 /* landing-page-mockupsTests */,
-				5779876E2E00A430006E5AD3 /* landing-page-mockupsUITests */,
+				577987572E00A42E006E5AD3 /* TrueDepthVolumeApp */,
+				577987642E00A430006E5AD3 /* TrueDepthVolumeAppTests */,
+				5779876E2E00A430006E5AD3 /* TrueDepthVolumeAppUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -258,12 +240,12 @@
 /* Begin PBXTargetDependency section */
 		577987672E00A430006E5AD3 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 577987572E00A42E006E5AD3 /* landing-page-mockups */;
+			target = 577987572E00A42E006E5AD3 /* TrueDepthVolumeApp */;
 			targetProxy = 577987662E00A430006E5AD3 /* PBXContainerItemProxy */;
 		};
 		577987712E00A430006E5AD3 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 577987572E00A42E006E5AD3 /* landing-page-mockups */;
+			target = 577987572E00A42E006E5AD3 /* TrueDepthVolumeApp */;
 			targetProxy = 577987702E00A430006E5AD3 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
@@ -411,7 +393,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.tech.endev.landing-page-mockups";
+				PRODUCT_BUNDLE_IDENTIFIER = com.tech.endev.TrueDepthVolumeApp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
@@ -440,7 +422,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.tech.endev.landing-page-mockups";
+				PRODUCT_BUNDLE_IDENTIFIER = com.tech.endev.TrueDepthVolumeApp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
@@ -463,7 +445,7 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/landing-page-mockups.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/landing-page-mockups";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/TrueDepthVolumeApp.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/TrueDepthVolumeApp";
 			};
 			name = Debug;
 		};
@@ -482,7 +464,7 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/landing-page-mockups.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/landing-page-mockups";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/TrueDepthVolumeApp.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/TrueDepthVolumeApp";
 			};
 			name = Release;
 		};
@@ -523,7 +505,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		577987532E00A42E006E5AD3 /* Build configuration list for PBXProject "landing-page-mockups" */ = {
+		577987532E00A42E006E5AD3 /* Build configuration list for PBXProject "TrueDepthVolumeApp" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				577987772E00A430006E5AD3 /* Debug */,
@@ -532,7 +514,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		577987792E00A430006E5AD3 /* Build configuration list for PBXNativeTarget "landing-page-mockups" */ = {
+		577987792E00A430006E5AD3 /* Build configuration list for PBXNativeTarget "TrueDepthVolumeApp" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				5779877A2E00A430006E5AD3 /* Debug */,
@@ -541,7 +523,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		5779877C2E00A430006E5AD3 /* Build configuration list for PBXNativeTarget "landing-page-mockupsTests" */ = {
+		5779877C2E00A430006E5AD3 /* Build configuration list for PBXNativeTarget "TrueDepthVolumeAppTests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				5779877D2E00A430006E5AD3 /* Debug */,
@@ -550,7 +532,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		5779877F2E00A430006E5AD3 /* Build configuration list for PBXNativeTarget "landing-page-mockupsUITests" */ = {
+		5779877F2E00A430006E5AD3 /* Build configuration list for PBXNativeTarget "TrueDepthVolumeAppUITests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				577987802E00A430006E5AD3 /* Debug */,

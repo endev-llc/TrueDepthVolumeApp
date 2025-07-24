@@ -1,6 +1,6 @@
 //
 //  ContentView.swift
-//  landing-page-mockups
+//  TrueDepthVolumeApp
 //
 //  Created by Jake Adams on 6/16/25.
 //
