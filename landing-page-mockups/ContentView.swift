@@ -7,15 +7,23 @@
 
 import SwiftUI
 import AVFoundation
+import MediaPlayer
 
 struct ContentView: View {
     @StateObject private var cameraManager = CameraManager()
+    @StateObject private var volumeManager = VolumeButtonManager()
 
     var body: some View {
         ZStack(alignment: .bottom) {
             CameraView(session: cameraManager.session)
-                .onAppear(perform: cameraManager.startSession)
-                .onDisappear(perform: cameraManager.stopSession)
+                .onAppear {
+                    cameraManager.startSession()
+                    volumeManager.setupVolumeMonitoring()
+                }
+                .onDisappear {
+                    cameraManager.stopSession()
+                    volumeManager.stopVolumeMonitoring()
+                }
                 .ignoresSafeArea()
 
             VStack(spacing: 10) {
@@ -49,6 +57,9 @@ struct ContentView: View {
                 }
             }
             .padding(.bottom, 50)
+            
+            // Hidden volume view for capturing volume button presses
+            VolumeView()
         }
         .alert(isPresented: $cameraManager.showError) {
             Alert(
@@ -62,7 +73,94 @@ struct ContentView: View {
                 ShareSheet(items: [fileURL])
             }
         }
+        .onReceive(volumeManager.$volumePressed) { pressed in
+            if pressed {
+                cameraManager.captureAndSaveDepthData()
+            }
+        }
     }
+}
+
+// MARK: - Volume Button Manager
+class VolumeButtonManager: NSObject, ObservableObject {
+    @Published var volumePressed = false
+    
+    private var initialVolume: Float = 0.0
+    private var volumeView: MPVolumeView?
+    
+    func setupVolumeMonitoring() {
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            print("Failed to activate audio session: \(error)")
+        }
+        
+        initialVolume = AVAudioSession.sharedInstance().outputVolume
+        
+        // Start monitoring volume changes
+        AVAudioSession.sharedInstance().addObserver(
+            self,
+            forKeyPath: "outputVolume",
+            options: [.new, .old],
+            context: nil
+        )
+    }
+    
+    func stopVolumeMonitoring() {
+        AVAudioSession.sharedInstance().removeObserver(self, forKeyPath: "outputVolume")
+    }
+    
+    override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
+        if keyPath == "outputVolume" {
+            guard let change = change,
+                  let newValue = change[.newKey] as? Float,
+                  let oldValue = change[.oldKey] as? Float else { return }
+            
+            // Detect volume up button press (volume increase)
+            if newValue > oldValue {
+                DispatchQueue.main.async {
+                    self.volumePressed = true
+                    // Reset the flag after a short delay
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        self.volumePressed = false
+                    }
+                }
+                
+                // Reset volume to previous level to prevent actual volume change
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    if let volumeSlider = self.getVolumeSlider() {
+                        volumeSlider.value = oldValue
+                    }
+                }
+            }
+        }
+    }
+    
+    private func getVolumeSlider() -> UISlider? {
+        let volumeView = MPVolumeView()
+        for subview in volumeView.subviews {
+            if let slider = subview as? UISlider {
+                return slider
+            }
+        }
+        return nil
+    }
+    
+    deinit {
+        stopVolumeMonitoring()
+    }
+}
+
+// MARK: - Volume View (Hidden)
+struct VolumeView: UIViewRepresentable {
+    func makeUIView(context: Context) -> MPVolumeView {
+        let volumeView = MPVolumeView(frame: CGRect(x: -1000, y: -1000, width: 1, height: 1))
+        volumeView.alpha = 0.0001
+        volumeView.isUserInteractionEnabled = false
+        return volumeView
+    }
+    
+    func updateUIView(_ uiView: MPVolumeView, context: Context) {}
 }
 
 // MARK: - Camera Manager (Core Logic)
@@ -212,23 +310,15 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         do {
             var csvContent = "x,y,depth_meters\n" // CSV header
             
-            // Subsample the data to reduce file size and duplicates
-            // Sample every 5th pixel to make the file more manageable
-            let sampleRate = 5
-            var validDepthCount = 0
+            // Track min/max for statistics (valid numbers only)
             var minDepth: Float = Float.infinity
             var maxDepth: Float = -Float.infinity
             
-            // First pass: collect statistics and subsample
-            for y in stride(from: 0, to: height, by: sampleRate) {
-                for x in stride(from: 0, to: width, by: sampleRate) {
+            // Process all pixels to capture complete raw depth data (no filtering)
+            for y in 0..<height {
+                for x in 0..<width {
                     let pixelIndex = y * (bytesPerRow / MemoryLayout<Float32>.stride) + x
                     let rawDepth = floatBuffer[pixelIndex]
-                    
-                    // Skip invalid values
-                    if rawDepth.isNaN || rawDepth.isInfinite || rawDepth <= 0 {
-                        continue
-                    }
                     
                     var processedDepth = rawDepth
                     
@@ -242,17 +332,14 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
                         }
                     }
                     
-                    // Sanity check: depth should be reasonable for TrueDepth camera (0.2m to 5m typically)
-                    if processedDepth < 0.1 || processedDepth > 10.0 {
-                        continue
-                    }
-                    
-                    // Include all valid values
+                    // Output ALL data - no filtering whatsoever
                     csvContent += "\(x),\(y),\(String(format: "%.4f", processedDepth))\n"
                     
-                    validDepthCount += 1
-                    minDepth = min(minDepth, processedDepth)
-                    maxDepth = max(maxDepth, processedDepth)
+                    // Track min/max for valid numbers only (for statistics)
+                    if !processedDepth.isNaN && !processedDepth.isInfinite {
+                        minDepth = min(minDepth, processedDepth)
+                        maxDepth = max(maxDepth, processedDepth)
+                    }
                 }
             }
             
@@ -269,14 +356,14 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
             Width: \(width) pixels
             Height: \(height) pixels
             Total pixels: \(width * height)
-            Sampled pixels: \(validDepthCount)
-            Sample rate: every \(sampleRate) pixels
+            Pixels captured: \(width * height) (ALL pixels - no filtering applied)
+            Coverage: Complete raw data capture
             
             Original depth data type: \(depthData.depthDataType)
             Was disparity data: \(isDisparityData)
             Processed depth data type: \(processedDepthData.depthDataType)
             
-            Depth Statistics:
+            Depth Statistics (valid numbers only):
             Min depth: \(String(format: "%.4f", minDepth))m
             Max depth: \(String(format: "%.4f", maxDepth))m
             Range: \(String(format: "%.4f", maxDepth - minDepth))m
@@ -288,8 +375,9 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
             
             Notes:
             - Depth values are in meters
-            - Only valid depth values are included
-            - Data is subsampled to reduce file size
+            - NO FILTERING APPLIED - includes NaN, infinite, and all raw values
+            - All pixels processed for complete raw data preservation
+            - May contain invalid/extreme values for experimental analysis
             - Closer objects have smaller depth values
             - Farther objects have larger depth values
             """
@@ -302,12 +390,13 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
                 self.fileToShare = fileURL
                 self.showShareSheet = true
                 
-                print("✅ Depth data saved successfully!")
+                print("✅ Raw depth data saved successfully!")
                 print("📍 File location: \(fileURL.path)")
                 print("📊 Original dimensions: \(width) x \(height)")
-                print("📊 Sampled points: \(validDepthCount)")
-                print("📊 Depth range: \(String(format: "%.4f", minDepth))m - \(String(format: "%.4f", maxDepth))m")
+                print("📊 Total pixels captured: \(width * height) (ALL pixels - no filtering)")
+                print("📊 Depth range (valid numbers): \(String(format: "%.4f", minDepth))m - \(String(format: "%.4f", maxDepth))m")
                 print("🔍 Was disparity data: \(isDisparityData)")
+                print("⚠️ Raw data includes NaN/infinite values for experimental analysis")
                 print("📁 You can find this file in the Files app under 'On My iPhone' > 'YourAppName'")
             }
             
