@@ -273,7 +273,7 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         if depthData.depthDataType == kCVPixelFormatType_DisparityFloat16 ||
            depthData.depthDataType == kCVPixelFormatType_DisparityFloat32 {
             isDisparityData = true
-            // Convert disparity to depth
+            // Convert disparity to depth using Apple's proper conversion
             do {
                 processedDepthData = try depthData.converting(toDepthDataType: kCVPixelFormatType_DepthFloat32)
             } catch {
@@ -313,32 +313,22 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
             // Track min/max for statistics (valid numbers only)
             var minDepth: Float = Float.infinity
             var maxDepth: Float = -Float.infinity
+            var validPixelCount = 0
             
-            // Process all pixels to capture complete raw depth data (no filtering)
+            // Process all pixels
             for y in 0..<height {
                 for x in 0..<width {
                     let pixelIndex = y * (bytesPerRow / MemoryLayout<Float32>.stride) + x
-                    let rawDepth = floatBuffer[pixelIndex]
+                    let depthValue = floatBuffer[pixelIndex]
                     
-                    var processedDepth = rawDepth
-                    
-                    // If this was originally disparity data, the conversion might not be perfect
-                    // Apply additional processing if needed
-                    if isDisparityData && rawDepth > 0 {
-                        // Sometimes the conversion doesn't work perfectly, so we might need to invert
-                        // Check if values look like disparity (0-1 range typically)
-                        if rawDepth < 1.0 {
-                            processedDepth = 1.0 / rawDepth
-                        }
-                    }
-                    
-                    // Output ALL data - no filtering whatsoever
-                    csvContent += "\(x),\(y),\(String(format: "%.4f", processedDepth))\n"
+                    // NO MANUAL PROCESSING - use the converted depth value directly
+                    csvContent += "\(x),\(y),\(String(format: "%.6f", depthValue))\n"
                     
                     // Track min/max for valid numbers only (for statistics)
-                    if !processedDepth.isNaN && !processedDepth.isInfinite {
-                        minDepth = min(minDepth, processedDepth)
-                        maxDepth = max(maxDepth, processedDepth)
+                    if !depthValue.isNaN && !depthValue.isInfinite && depthValue > 0 {
+                        minDepth = min(minDepth, depthValue)
+                        maxDepth = max(maxDepth, depthValue)
+                        validPixelCount += 1
                     }
                 }
             }
@@ -346,7 +336,7 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
             // Write to file
             try csvContent.write(to: fileURL, atomically: true, encoding: .utf8)
             
-            // Also save metadata with more detailed information
+            // Save metadata
             let metadataFileName = "depth_metadata_\(timestamp).txt"
             let metadataURL = documentsDirectory.appendingPathComponent(metadataFileName)
             let metadata = """
@@ -356,33 +346,34 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
             Width: \(width) pixels
             Height: \(height) pixels
             Total pixels: \(width * height)
-            Pixels captured: \(width * height) (ALL pixels - no filtering applied)
-            Coverage: Complete raw data capture
+            Valid pixels: \(validPixelCount)
+            Coverage: \(String(format: "%.1f", Float(validPixelCount) / Float(width * height) * 100))%
             
             Original depth data type: \(depthData.depthDataType)
             Was disparity data: \(isDisparityData)
             Processed depth data type: \(processedDepthData.depthDataType)
             
-            Depth Statistics (valid numbers only):
-            Min depth: \(String(format: "%.4f", minDepth))m
-            Max depth: \(String(format: "%.4f", maxDepth))m
-            Range: \(String(format: "%.4f", maxDepth - minDepth))m
+            Depth Statistics (valid pixels only):
+            Min depth: \(minDepth == Float.infinity ? "N/A" : String(format: "%.6f", minDepth))m
+            Max depth: \(maxDepth == -Float.infinity ? "N/A" : String(format: "%.6f", maxDepth))m
+            Range: \(minDepth == Float.infinity || maxDepth == -Float.infinity ? "N/A" : String(format: "%.6f", maxDepth - minDepth))m
             
-            Camera calibration: \(depthData.cameraCalibrationData)
+            Camera calibration: \(String(describing: depthData.cameraCalibrationData))
             
             File: \(fileName)
             Location: \(fileURL.path)
             
             Notes:
-            - Depth values are in meters
-            - NO FILTERING APPLIED - includes NaN, infinite, and all raw values
-            - All pixels processed for complete raw data preservation
-            - May contain invalid/extreme values for experimental analysis
-            - Closer objects have smaller depth values
-            - Farther objects have larger depth values
+            - Depth values are in meters (properly converted from disparity)
+            - Closer objects have SMALLER depth values
+            - Farther objects have LARGER depth values
+            - Uses Apple's calibrated disparity-to-depth conversion
             """
             
             try metadata.write(to: metadataURL, atomically: true, encoding: .utf8)
+            
+            let validMinDepth = minDepth == Float.infinity ? 0 : minDepth
+            let validMaxDepth = maxDepth == -Float.infinity ? 0 : maxDepth
             
             DispatchQueue.main.async {
                 self.isProcessing = false
@@ -390,14 +381,12 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
                 self.fileToShare = fileURL
                 self.showShareSheet = true
                 
-                print("✅ Raw depth data saved successfully!")
+                print("✅ Depth data saved successfully!")
                 print("📍 File location: \(fileURL.path)")
-                print("📊 Original dimensions: \(width) x \(height)")
-                print("📊 Total pixels captured: \(width * height) (ALL pixels - no filtering)")
-                print("📊 Depth range (valid numbers): \(String(format: "%.4f", minDepth))m - \(String(format: "%.4f", maxDepth))m")
-                print("🔍 Was disparity data: \(isDisparityData)")
-                print("⚠️ Raw data includes NaN/infinite values for experimental analysis")
-                print("📁 You can find this file in the Files app under 'On My iPhone' > 'YourAppName'")
+                print("📊 Dimensions: \(width) x \(height)")
+                print("📊 Valid pixels: \(validPixelCount)/\(width * height)")
+                print("📊 Depth range: \(String(format: "%.6f", validMinDepth))m - \(String(format: "%.6f", validMaxDepth))m")
+                print("🔄 Was disparity data: \(isDisparityData)")
             }
             
         } catch {
