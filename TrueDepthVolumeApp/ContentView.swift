@@ -308,7 +308,7 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         let fileURL = documentsDirectory.appendingPathComponent(fileName)
         
         do {
-            var csvContent = "x,y,depth_meters\n" // CSV header
+            var csvContent = "x,y,depth_meters,depth_geometry\n"
             
             // Track min/max for statistics (valid numbers only)
             var minDepth: Float = Float.infinity
@@ -321,8 +321,17 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
                     let pixelIndex = y * (bytesPerRow / MemoryLayout<Float32>.stride) + x
                     let depthValue = floatBuffer[pixelIndex]
                     
-                    // NO MANUAL PROCESSING - use the converted depth value directly
-                    csvContent += "\(x),\(y),\(String(format: "%.6f", depthValue))\n"
+                    // Keep a processed version for geometric correction
+                    var processedDepth = depthValue
+                    if isDisparityData && depthValue > 0 {
+                        // Apply the geometric correction logic
+                        if depthValue < 1.0 {
+                            processedDepth = 1.0 / depthValue
+                        }
+                    }
+                    
+                    // Store BOTH values: raw depth for accuracy, processed for geometry
+                    csvContent += "\(x),\(y),\(String(format: "%.6f", depthValue)),\(String(format: "%.6f", processedDepth))\n"
                     
                     // Track min/max for valid numbers only (for statistics)
                     if !depthValue.isNaN && !depthValue.isInfinite && depthValue > 0 {
