@@ -1,3 +1,4 @@
+
 //
 //  ContentView.swift
 //  TrueDepthVolumeApp
@@ -50,17 +51,34 @@ struct ContentView: View {
                         .cornerRadius(10)
                 }
                 
+                // Show buttons when data is captured
                 if cameraManager.capturedDepthImage != nil && cameraManager.capturedPhoto != nil {
-                    Button(action: {
-                        showOverlayView = true
-                    }) {
-                        Text("View Overlay")
-                            .font(.headline)
-                            .fontWeight(.bold)
-                            .foregroundColor(.white)
-                            .padding()
-                            .background(Color.green)
-                            .cornerRadius(15)
+                    HStack(spacing: 15) {
+                        Button(action: {
+                            showOverlayView = true
+                        }) {
+                            Text("View Overlay")
+                                .font(.headline)
+                                .fontWeight(.bold)
+                                .foregroundColor(.white)
+                                .padding()
+                                .background(Color.green)
+                                .cornerRadius(15)
+                        }
+                        
+                        // Export button
+                        Button(action: {
+                            cameraManager.showShareSheet = true
+                        }) {
+                            Text("Export")
+                                .font(.headline)
+                                .fontWeight(.bold)
+                                .foregroundColor(.white)
+                                .padding()
+                                .background(Color.orange)
+                                .cornerRadius(15)
+                        }
+                        .disabled(cameraManager.fileToShare == nil)
                     }
                 }
                 
