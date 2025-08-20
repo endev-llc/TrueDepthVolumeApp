@@ -79,6 +79,21 @@ struct ContentView: View {
                         }
                         .disabled(cameraManager.fileToShare == nil && cameraManager.croppedFileToShare == nil)
                     }
+                    
+                    // 3D View button (only show if we have a cropped file)
+                    if cameraManager.croppedFileToShare != nil {
+                        Button(action: {
+                            cameraManager.show3DView = true
+                        }) {
+                            Text("View 3D")
+                                .font(.headline)
+                                .fontWeight(.bold)
+                                .foregroundColor(.white)
+                                .padding()
+                                .background(Color.purple)
+                                .cornerRadius(15)
+                        }
+                    }
                 }
                 
                 if let lastSavedFile = cameraManager.lastSavedFileName {
@@ -118,6 +133,14 @@ struct ContentView: View {
                     photo: photo,
                     cameraManager: cameraManager,
                     onDismiss: { showOverlayView = false }
+                )
+            }
+        }
+        .fullScreenCover(isPresented: $cameraManager.show3DView) {
+            if let croppedFileURL = cameraManager.croppedFileToShare {
+                DepthVisualization3DView(
+                    csvFileURL: croppedFileURL,
+                    onDismiss: { cameraManager.show3DView = false }
                 )
             }
         }
@@ -511,6 +534,7 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
     @Published var capturedPhoto: UIImage?
     @Published var croppedFileToShare: URL?
     @Published var hasOutline = false
+    @Published var show3DView = false
     
     var errorMessage = ""
     var fileToShare: URL?
@@ -971,4 +995,315 @@ struct ShareSheet: UIViewControllerRepresentable {
     }
     
     func updateUIViewController(_ uiView: UIActivityViewController, context: Context) {}
+}
+
+// MARK: - 3D Depth Visualization View
+import SceneKit
+
+struct DepthVisualization3DView: View {
+    let csvFileURL: URL
+    let onDismiss: () -> Void
+    
+    @State private var isLoading = true
+    @State private var errorMessage: String?
+    @State private var scene: SCNScene?
+    
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            
+            VStack {
+                // Header
+                HStack {
+                    Button("Done") {
+                        onDismiss()
+                    }
+                    .foregroundColor(.white)
+                    .font(.headline)
+                    .padding()
+                    
+                    Spacer()
+                    
+                    Text("3D Depth Visualization")
+                        .foregroundColor(.white)
+                        .font(.headline)
+                    
+                    Spacer()
+                    
+                    // Placeholder for symmetry
+                    Button("") { }
+                        .opacity(0)
+                        .padding()
+                }
+                
+                // 3D Scene or Loading/Error
+                if isLoading {
+                    Spacer()
+                    VStack(spacing: 20) {
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                            .scaleEffect(1.5)
+                        Text("Loading 3D Model...")
+                            .foregroundColor(.white)
+                            .font(.headline)
+                    }
+                    Spacer()
+                } else if let errorMessage = errorMessage {
+                    Spacer()
+                    VStack(spacing: 20) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .foregroundColor(.red)
+                            .font(.system(size: 50))
+                        Text("Error Loading 3D Model")
+                            .foregroundColor(.white)
+                            .font(.headline)
+                        Text(errorMessage)
+                            .foregroundColor(.gray)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+                    }
+                    Spacer()
+                } else if let scene = scene {
+                    SceneView(
+                        scene: scene,
+                        pointOfView: nil,
+                        options: [.allowsCameraControl, .autoenablesDefaultLighting],
+                        preferredFramesPerSecond: 60,
+                        antialiasingMode: .multisampling4X,
+                        delegate: nil,
+                        technique: nil
+                    )
+                    .background(Color.black)
+                }
+                
+                // Instructions
+                if !isLoading && errorMessage == nil {
+                    Text("Drag to rotate • Pinch to zoom • Pan with two fingers")
+                        .foregroundColor(.gray)
+                        .font(.caption)
+                        .multilineTextAlignment(.center)
+                        .padding()
+                }
+            }
+        }
+        .onAppear {
+            loadAndCreate3DScene()
+        }
+    }
+    
+    private func loadAndCreate3DScene() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let csvContent = try String(contentsOf: csvFileURL)
+                let depthPoints = parseCSVContent(csvContent)
+                let scene = create3DScene(from: depthPoints)
+                
+                DispatchQueue.main.async {
+                    self.scene = scene
+                    self.isLoading = false
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.errorMessage = "Failed to load CSV file: \(error.localizedDescription)"
+                    self.isLoading = false
+                }
+            }
+        }
+    }
+    
+    private func parseCSVContent(_ content: String) -> [DepthPoint] {
+        var points: [DepthPoint] = []
+        let lines = content.components(separatedBy: .newlines)
+        
+        // Skip header line
+        for line in lines.dropFirst() {
+            let components = line.components(separatedBy: ",")
+            guard components.count >= 4,
+                  let x = Float(components[0]),
+                  let y = Float(components[1]),
+                  let depth = Float(components[2]) else { continue }
+            
+            // Skip invalid depth values
+            if depth.isNaN || depth.isInfinite || depth <= 0 { continue }
+            
+            points.append(DepthPoint(x: x, y: y, depth: depth))
+        }
+        
+        return points
+    }
+    
+    private func create3DScene(from points: [DepthPoint]) -> SCNScene {
+        let scene = SCNScene()
+        
+        // Create point cloud geometry
+        let geometry = createPointCloudGeometry(from: points)
+        let node = SCNNode(geometry: geometry)
+        
+        // Position the object at the center
+        centerObject(node, points: points)
+        
+        scene.rootNode.addChildNode(node)
+        
+        // Add lighting
+        setupLighting(scene: scene)
+        
+        // Setup camera
+        setupCamera(scene: scene, points: points)
+        
+        return scene
+    }
+    
+    private func createPointCloudGeometry(from points: [DepthPoint]) -> SCNGeometry {
+        // Create custom geometry with vertices
+        var vertices: [SCNVector3] = []
+        var colors: [SCNVector3] = []
+        
+        // Find depth range for color mapping
+        let minDepth = points.map { $0.depth }.min() ?? 0
+        let maxDepth = points.map { $0.depth }.max() ?? 1
+        let depthRange = maxDepth - minDepth
+        
+        for point in points {
+            // Convert to 3D coordinates
+            // X stays X, Y becomes Z (depth in scene), depth becomes Y (height)
+            let vertex = SCNVector3(
+                x: point.x / 100.0,  // Scale down for better visualization
+                y: -point.depth * 10.0,  // Depth becomes height (negative for proper orientation)
+                z: point.y / 100.0   // Y becomes Z
+            )
+            vertices.append(vertex)
+            
+            // Color based on depth (closer = red, farther = blue)
+            let normalizedDepth = depthRange > 0 ? (point.depth - minDepth) / depthRange : 0
+            let color = depthToColor(normalizedDepth)
+            colors.append(color)
+        }
+        
+        // Create geometry source for vertices
+        let vertexData = Data(bytes: vertices, count: vertices.count * MemoryLayout<SCNVector3>.size)
+        let vertexSource = SCNGeometrySource(
+            data: vertexData,
+            semantic: .vertex,
+            vectorCount: vertices.count,
+            usesFloatComponents: true,
+            componentsPerVector: 3,
+            bytesPerComponent: MemoryLayout<Float>.size,
+            dataOffset: 0,
+            dataStride: MemoryLayout<SCNVector3>.size
+        )
+        
+        // Create geometry source for colors
+        let colorData = Data(bytes: colors, count: colors.count * MemoryLayout<SCNVector3>.size)
+        let colorSource = SCNGeometrySource(
+            data: colorData,
+            semantic: .color,
+            vectorCount: colors.count,
+            usesFloatComponents: true,
+            componentsPerVector: 3,
+            bytesPerComponent: MemoryLayout<Float>.size,
+            dataOffset: 0,
+            dataStride: MemoryLayout<SCNVector3>.size
+        )
+        
+        // Create indices for points
+        let indices: [UInt32] = Array(0..<UInt32(vertices.count))
+        let indexData = Data(bytes: indices, count: indices.count * MemoryLayout<UInt32>.size)
+        let element = SCNGeometryElement(
+            data: indexData,
+            primitiveType: .point,
+            primitiveCount: vertices.count,
+            bytesPerIndex: MemoryLayout<UInt32>.size
+        )
+        
+        let geometry = SCNGeometry(sources: [vertexSource, colorSource], elements: [element])
+        
+        // Configure material for point cloud
+        let material = SCNMaterial()
+        material.lightingModel = .constant
+        material.isDoubleSided = true
+        geometry.materials = [material]
+        
+        return geometry
+    }
+    
+    private func depthToColor(_ normalizedDepth: Float) -> SCNVector3 {
+        // Jet colormap: blue (far) -> green -> yellow -> red (close)
+        let t = normalizedDepth
+        
+        if t < 0.25 {
+            // Blue to cyan
+            let local_t = t / 0.25
+            return SCNVector3(0, local_t, 1)
+        } else if t < 0.5 {
+            // Cyan to green
+            let local_t = (t - 0.25) / 0.25
+            return SCNVector3(0, 1, 1 - local_t)
+        } else if t < 0.75 {
+            // Green to yellow
+            let local_t = (t - 0.5) / 0.25
+            return SCNVector3(local_t, 1, 0)
+        } else {
+            // Yellow to red
+            let local_t = (t - 0.75) / 0.25
+            return SCNVector3(1, 1 - local_t, 0)
+        }
+    }
+    
+    private func centerObject(_ node: SCNNode, points: [DepthPoint]) {
+        guard !points.isEmpty else { return }
+        
+        let minX = points.map { $0.x }.min() ?? 0
+        let maxX = points.map { $0.x }.max() ?? 0
+        let minY = points.map { $0.y }.min() ?? 0
+        let maxY = points.map { $0.y }.max() ?? 0
+        
+        let centerX = (minX + maxX) / 2.0 / 100.0
+        let centerZ = (minY + maxY) / 2.0 / 100.0
+        
+        node.position = SCNVector3(-centerX, 0, -centerZ)
+    }
+    
+    private func setupLighting(scene: SCNScene) {
+        // Ambient light
+        let ambientLight = SCNLight()
+        ambientLight.type = .ambient
+        ambientLight.color = UIColor.white
+        ambientLight.intensity = 300
+        let ambientNode = SCNNode()
+        ambientNode.light = ambientLight
+        scene.rootNode.addChildNode(ambientNode)
+        
+        // Directional light
+        let directionalLight = SCNLight()
+        directionalLight.type = .directional
+        directionalLight.color = UIColor.white
+        directionalLight.intensity = 500
+        let lightNode = SCNNode()
+        lightNode.light = directionalLight
+        lightNode.position = SCNVector3(0, 10, 10)
+        lightNode.look(at: SCNVector3(0, 0, 0))
+        scene.rootNode.addChildNode(lightNode)
+    }
+    
+    private func setupCamera(scene: SCNScene, points: [DepthPoint]) {
+        let camera = SCNCamera()
+        camera.automaticallyAdjustsZRange = true
+        let cameraNode = SCNNode()
+        cameraNode.camera = camera
+        
+        // Position camera to get a good view of the object
+        let maxDepth = points.map { $0.depth }.max() ?? 1
+        let cameraDistance = Double(maxDepth * 15.0) // Adjust multiplier as needed
+        cameraNode.position = SCNVector3(0, cameraDistance * 0.3, cameraDistance)
+        cameraNode.look(at: SCNVector3(0, 0, 0))
+        
+        scene.rootNode.addChildNode(cameraNode)
+    }
+}
+
+// MARK: - Depth Point Data Structure
+struct DepthPoint {
+    let x: Float
+    let y: Float
+    let depth: Float
 }
