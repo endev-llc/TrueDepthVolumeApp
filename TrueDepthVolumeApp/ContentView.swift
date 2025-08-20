@@ -1,4 +1,3 @@
-
 //
 //  ContentView.swift
 //  TrueDepthVolumeApp
@@ -78,7 +77,7 @@ struct ContentView: View {
                                 .background(Color.orange)
                                 .cornerRadius(15)
                         }
-                        .disabled(cameraManager.fileToShare == nil)
+                        .disabled(cameraManager.fileToShare == nil && cameraManager.croppedFileToShare == nil)
                     }
                 }
                 
@@ -104,7 +103,10 @@ struct ContentView: View {
             )
         }
         .sheet(isPresented: $cameraManager.showShareSheet) {
-            if let fileURL = cameraManager.fileToShare {
+            // Export cropped CSV if available, otherwise raw CSV
+            if let croppedFileURL = cameraManager.croppedFileToShare {
+                ShareSheet(items: [croppedFileURL])
+            } else if let fileURL = cameraManager.fileToShare {
                 ShareSheet(items: [fileURL])
             }
         }
@@ -114,6 +116,7 @@ struct ContentView: View {
                 OverlayView(
                     depthImage: depthImage,
                     photo: photo,
+                    cameraManager: cameraManager,
                     onDismiss: { showOverlayView = false }
                 )
             }
@@ -126,14 +129,20 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Overlay View for Image Comparison
+// MARK: - Enhanced Overlay View with Drawing
 struct OverlayView: View {
     let depthImage: UIImage
     let photo: UIImage
+    let cameraManager: CameraManager
     let onDismiss: () -> Void
     
     @State private var photoOpacity: Double = 0.7
     @State private var showingDepthOnly = false
+    @State private var isDrawingMode = false
+    @State private var drawnPath: [CGPoint] = []
+    @State private var isDrawing = false
+    @State private var imageFrame: CGRect = .zero
+    @State private var showingConfirmation = false
     
     var body: some View {
         ZStack {
@@ -150,11 +159,41 @@ struct OverlayView: View {
                     
                     Spacer()
                     
-                    Button(showingDepthOnly ? "Show Both" : "Depth Only") {
-                        showingDepthOnly.toggle()
+                    if !isDrawingMode {
+                        Button(showingDepthOnly ? "Show Both" : "Depth Only") {
+                            showingDepthOnly.toggle()
+                        }
+                        .foregroundColor(.white)
+                        .padding()
+                        
+                        Button("Draw Outline") {
+                            isDrawingMode = true
+                            drawnPath = []
+                        }
+                        .foregroundColor(.cyan)
+                        .padding()
+                    } else {
+                        Button("Clear") {
+                            drawnPath = []
+                        }
+                        .foregroundColor(.red)
+                        .padding()
+                        
+                        Button("Cancel") {
+                            isDrawingMode = false
+                            drawnPath = []
+                        }
+                        .foregroundColor(.white)
+                        .padding()
+                        
+                        if drawnPath.count > 10 {
+                            Button("Confirm") {
+                                showingConfirmation = true
+                            }
+                            .foregroundColor(.green)
+                            .padding()
+                        }
                     }
-                    .foregroundColor(.white)
-                    .padding()
                 }
                 
                 // Opacity slider
@@ -172,19 +211,66 @@ struct OverlayView: View {
                 
                 Spacer()
                 
-                // Image overlay
-                ZStack {
-                    // Depth image (bottom layer)
-                    Image(uiImage: depthImage)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                    
-                    // Photo (top layer with opacity)
-                    if !showingDepthOnly {
-                        Image(uiImage: photo)
+                // Image overlay with drawing
+                GeometryReader { geometry in
+                    ZStack {
+                        // Depth image (bottom layer)
+                        Image(uiImage: depthImage)
                             .resizable()
                             .aspectRatio(contentMode: .fit)
-                            .opacity(photoOpacity)
+                            .background(
+                                GeometryReader { imageGeometry in
+                                    Color.clear
+                                        .onAppear {
+                                            // Calculate the actual image frame within the GeometryReader
+                                            let imageAspectRatio = depthImage.size.width / depthImage.size.height
+                                            let containerAspectRatio = geometry.size.width / geometry.size.height
+                                            
+                                            if imageAspectRatio > containerAspectRatio {
+                                                // Image is wider - fit to width
+                                                let imageHeight = geometry.size.width / imageAspectRatio
+                                                let yOffset = (geometry.size.height - imageHeight) / 2
+                                                imageFrame = CGRect(x: 0, y: yOffset, width: geometry.size.width, height: imageHeight)
+                                            } else {
+                                                // Image is taller - fit to height
+                                                let imageWidth = geometry.size.height * imageAspectRatio
+                                                let xOffset = (geometry.size.width - imageWidth) / 2
+                                                imageFrame = CGRect(x: xOffset, y: 0, width: imageWidth, height: geometry.size.height)
+                                            }
+                                        }
+                                }
+                            )
+                        
+                        // Photo (top layer with opacity)
+                        if !showingDepthOnly {
+                            Image(uiImage: photo)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                                .opacity(photoOpacity)
+                        }
+                        
+                        // Drawing overlay
+                        if isDrawingMode {
+                            DrawingOverlay(
+                                path: $drawnPath,
+                                isDrawing: $isDrawing,
+                                frameSize: geometry.size,
+                                imageFrame: imageFrame
+                            )
+                        }
+                        
+                        // Show completed outline
+                        if !isDrawingMode && !drawnPath.isEmpty {
+                            Path { path in
+                                guard !drawnPath.isEmpty else { return }
+                                path.move(to: drawnPath[0])
+                                for point in drawnPath.dropFirst() {
+                                    path.addLine(to: point)
+                                }
+                                path.closeSubpath()
+                            }
+                            .stroke(Color.cyan, lineWidth: 3)
+                        }
                     }
                 }
                 .padding()
@@ -192,13 +278,142 @@ struct OverlayView: View {
                 Spacer()
                 
                 // Info text
-                Text("Align the images to ensure depth data matches visual features")
+                Text(isDrawingMode ?
+                     "Draw around the object you want to isolate. Tap 'Confirm' when done." :
+                     "Align the images to ensure depth data matches visual features")
                     .foregroundColor(.white)
                     .font(.caption)
                     .multilineTextAlignment(.center)
                     .padding()
             }
         }
+        .alert("Confirm Outline", isPresented: $showingConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Crop CSV") {
+                cropCSVWithOutline()
+                isDrawingMode = false
+            }
+        } message: {
+            Text("This will crop the depth data to only include points within your outline. Continue?")
+        }
+    }
+    
+    private func cropCSVWithOutline() {
+        // Convert drawn path to depth data coordinates and crop CSV
+        let imageSize = depthImage.size
+        let scaledPath = drawnPath.map { point in
+            // Convert from view coordinates to image coordinates
+            let relativeX = (point.x - imageFrame.minX) / imageFrame.width
+            let relativeY = (point.y - imageFrame.minY) / imageFrame.height
+            
+            // Convert to depth image coordinates
+            let depthX = relativeX * imageSize.width
+            let depthY = relativeY * imageSize.height
+            
+            return CGPoint(x: depthX, y: depthY)
+        }
+        
+        cameraManager.cropDepthDataWithPath(scaledPath)
+    }
+}
+
+// MARK: - Drawing Overlay
+struct DrawingOverlay: UIViewRepresentable {
+    @Binding var path: [CGPoint]
+    @Binding var isDrawing: Bool
+    let frameSize: CGSize
+    let imageFrame: CGRect
+    
+    func makeUIView(context: Context) -> DrawingView {
+        let view = DrawingView()
+        view.backgroundColor = UIColor.clear
+        view.onPathUpdate = { newPath in
+            path = newPath
+        }
+        view.onDrawingStateChange = { drawing in
+            isDrawing = drawing
+        }
+        view.imageFrame = imageFrame
+        return view
+    }
+    
+    func updateUIView(_ uiView: DrawingView, context: Context) {
+        uiView.imageFrame = imageFrame
+    }
+}
+
+// MARK: - Custom Drawing UIView
+class DrawingView: UIView {
+    var onPathUpdate: (([CGPoint]) -> Void)?
+    var onDrawingStateChange: ((Bool) -> Void)?
+    var imageFrame: CGRect = .zero
+    
+    private var currentPath: [CGPoint] = []
+    private var pathLayer: CAShapeLayer?
+    
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        setupLayer()
+    }
+    
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupLayer()
+    }
+    
+    private func setupLayer() {
+        pathLayer = CAShapeLayer()
+        pathLayer?.strokeColor = UIColor.cyan.cgColor
+        pathLayer?.fillColor = UIColor.clear.cgColor
+        pathLayer?.lineWidth = 3.0
+        pathLayer?.lineCap = .round
+        pathLayer?.lineJoin = .round
+        layer.addSublayer(pathLayer!)
+    }
+    
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let touch = touches.first else { return }
+        let point = touch.location(in: self)
+        
+        // Only allow drawing within the image frame
+        if imageFrame.contains(point) {
+            currentPath = [point]
+            onDrawingStateChange?(true)
+            updatePath()
+        }
+    }
+    
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let touch = touches.first else { return }
+        let point = touch.location(in: self)
+        
+        // Only add points within the image frame
+        if imageFrame.contains(point) {
+            currentPath.append(point)
+            updatePath()
+        }
+    }
+    
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        onDrawingStateChange?(false)
+        onPathUpdate?(currentPath)
+    }
+    
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        onDrawingStateChange?(false)
+    }
+    
+    private func updatePath() {
+        guard !currentPath.isEmpty else { return }
+        
+        let path = UIBezierPath()
+        path.move(to: currentPath[0])
+        
+        for point in currentPath.dropFirst() {
+            path.addLine(to: point)
+        }
+        
+        pathLayer?.path = path.cgPath
     }
 }
 
@@ -294,6 +509,8 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
     @Published var showShareSheet = false
     @Published var capturedDepthImage: UIImage?
     @Published var capturedPhoto: UIImage?
+    @Published var croppedFileToShare: URL?
+    @Published var hasOutline = false
     
     var errorMessage = ""
     var fileToShare: URL?
@@ -302,6 +519,7 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
     private var currentDepthData: AVDepthData?
     private var currentPhotoData: Data?
     private var captureCompletion: ((Bool) -> Void)?
+    private var rawDepthData: AVDepthData? // Store the raw depth data for cropping
 
     override init() {
         super.init()
@@ -401,6 +619,8 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
             self.isProcessing = true
             self.capturedDepthImage = nil
             self.capturedPhoto = nil
+            self.hasOutline = false
+            self.croppedFileToShare = nil
         }
         
         // Capture current depth data
@@ -429,6 +649,9 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
             return
         }
         
+        // Store raw depth data for later cropping
+        self.rawDepthData = depthData
+        
         // Process depth data visualization
         let depthImage = self.createDepthVisualization(from: depthData)
         
@@ -449,7 +672,45 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         self.currentPhotoData = nil
     }
 
-    // MARK: - Depth Visualization (ported from HTML)
+    // MARK: - CSV Cropping Function
+    func cropDepthDataWithPath(_ path: [CGPoint]) {
+        guard let depthData = rawDepthData else {
+            presentError("No depth data available for cropping.")
+            return
+        }
+        
+        saveDepthDataToFile(depthData: depthData, cropPath: path)
+        
+        DispatchQueue.main.async {
+            self.hasOutline = true
+        }
+    }
+    
+    // MARK: - Point in Polygon Algorithm
+    private func isPointInPolygon(point: CGPoint, polygon: [CGPoint]) -> Bool {
+        guard polygon.count > 2 else { return false }
+        
+        let x = point.x
+        let y = point.y
+        var inside = false
+        
+        var j = polygon.count - 1
+        for i in 0..<polygon.count {
+            let xi = polygon[i].x
+            let yi = polygon[i].y
+            let xj = polygon[j].x
+            let yj = polygon[j].y
+            
+            if ((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi) {
+                inside = !inside
+            }
+            j = i
+        }
+        
+        return inside
+    }
+
+    // MARK: - Depth Visualization (unchanged)
     private func createDepthVisualization(from depthData: AVDepthData) -> UIImage? {
         // Convert to depth data if it's disparity data
         let processedDepthData: AVDepthData
@@ -566,8 +827,8 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         ]
     }
 
-    // MARK: - CSV Save Function (unchanged but improved)
-    private func saveDepthDataToFile(depthData: AVDepthData) {
+    // MARK: - Enhanced CSV Save Function with Cropping
+    private func saveDepthDataToFile(depthData: AVDepthData, cropPath: [CGPoint]? = nil) {
         let processedDepthData: AVDepthData
         let isDisparityData: Bool
         
@@ -596,7 +857,7 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         let bytesPerRow = CVPixelBufferGetBytesPerRow(depthMap)
 
         let timestamp = Int(Date().timeIntervalSince1970)
-        let fileName = "depth_data_\(timestamp).csv"
+        let fileName = cropPath != nil ? "depth_data_cropped_\(timestamp).csv" : "depth_data_\(timestamp).csv"
         
         guard let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
             self.presentError("Could not access Documents directory.")
@@ -611,25 +872,40 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
             var minDepth: Float = Float.infinity
             var maxDepth: Float = -Float.infinity
             var validPixelCount = 0
+            var croppedPixelCount = 0
             
             for y in 0..<height {
                 for x in 0..<width {
                     let pixelIndex = y * (bytesPerRow / MemoryLayout<Float32>.stride) + x
                     let depthValue = floatBuffer[pixelIndex]
                     
-                    var processedDepth = depthValue
-                    if isDisparityData && depthValue > 0 {
-                        if depthValue < 1.0 {
-                            processedDepth = 1.0 / depthValue
-                        }
+                    // Check if cropping is enabled and if point is within the crop path
+                    var shouldInclude = true
+                    if let cropPath = cropPath, !cropPath.isEmpty {
+                        // Convert depth coordinates to rotated display coordinates to match the drawn path
+                        // The depth visualization applies: rotatedX = originalHeight - 1 - y, rotatedY = x
+                        let displayX = CGFloat(height - 1 - y)  // Matches the rotation in createDepthVisualization
+                        let displayY = CGFloat(x)
+                        let point = CGPoint(x: displayX, y: displayY)
+                        shouldInclude = isPointInPolygon(point: point, polygon: cropPath)
                     }
                     
-                    csvContent += "\(x),\(y),\(String(format: "%.6f", depthValue)),\(String(format: "%.6f", processedDepth))\n"
-                    
-                    if !depthValue.isNaN && !depthValue.isInfinite && depthValue > 0 {
-                        minDepth = min(minDepth, depthValue)
-                        maxDepth = max(maxDepth, depthValue)
-                        validPixelCount += 1
+                    if shouldInclude {
+                        var processedDepth = depthValue
+                        if isDisparityData && depthValue > 0 {
+                            if depthValue < 1.0 {
+                                processedDepth = 1.0 / depthValue
+                            }
+                        }
+                        
+                        csvContent += "\(x),\(y),\(String(format: "%.6f", depthValue)),\(String(format: "%.6f", processedDepth))\n"
+                        croppedPixelCount += 1
+                        
+                        if !depthValue.isNaN && !depthValue.isInfinite && depthValue > 0 {
+                            minDepth = min(minDepth, depthValue)
+                            maxDepth = max(maxDepth, depthValue)
+                            validPixelCount += 1
+                        }
                     }
                 }
             }
@@ -641,12 +917,20 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
             
             DispatchQueue.main.async {
                 self.lastSavedFileName = fileName
-                self.fileToShare = fileURL
+                
+                if cropPath != nil {
+                    self.croppedFileToShare = fileURL
+                } else {
+                    self.fileToShare = fileURL
+                }
                 
                 print("✅ Depth data saved successfully!")
                 print("📍 File location: \(fileURL.path)")
                 print("📊 Dimensions: \(width) x \(height)")
                 print("📊 Valid pixels: \(validPixelCount)/\(width * height)")
+                if cropPath != nil {
+                    print("✂️ Cropped pixels: \(croppedPixelCount)/\(width * height)")
+                }
                 print("📊 Depth range: \(String(format: "%.6f", validMinDepth))m - \(String(format: "%.6f", validMaxDepth))m")
             }
             
