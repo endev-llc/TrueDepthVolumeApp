@@ -1071,7 +1071,7 @@ struct DocumentPicker: UIViewControllerRepresentable {
     }
 }
 
-// MARK: - 3D Depth Visualization View
+// MARK: - 3D Depth Visualization View with Voxels
 import SceneKit
 
 struct DepthVisualization3DView: View {
@@ -1117,7 +1117,7 @@ struct DepthVisualization3DView: View {
                         ProgressView()
                             .progressViewStyle(CircularProgressViewStyle(tint: .white))
                             .scaleEffect(1.5)
-                        Text("Loading 3D Model...")
+                        Text("Generating 3D Model with Interior Voxels...")
                             .foregroundColor(.white)
                             .font(.headline)
                     }
@@ -1209,56 +1209,359 @@ struct DepthVisualization3DView: View {
     private func create3DScene(from points: [DepthPoint]) -> SCNScene {
         let scene = SCNScene()
         
-        // Create point cloud geometry
-        let geometry = createPointCloudGeometry(from: points)
-        let node = SCNNode(geometry: geometry)
+        // Convert 2D depth data to 3D coordinates first
+        let pointCloud3D = convertTo3DCoordinates(from: points)
         
-        // Position the object at the center
-        centerObject(node, points: points)
+        // Create point cloud geometry using 3D coordinates
+        let pointCloudGeometry = createPointCloudGeometry(from: pointCloud3D)
+        let pointCloudNode = SCNNode(geometry: pointCloudGeometry)
         
-        scene.rootNode.addChildNode(node)
+        // Create voxel geometry using the same 3D coordinates
+        let voxelGeometry = createVoxelGeometry(from: pointCloud3D)
+        let voxelNode = SCNNode(geometry: voxelGeometry)
+        
+        scene.rootNode.addChildNode(pointCloudNode)
+        scene.rootNode.addChildNode(voxelNode)
         
         // Add lighting
         setupLighting(scene: scene)
         
         // Setup camera
-        setupCamera(scene: scene, points: points)
+        setupCamera(scene: scene, pointCloud: pointCloud3D)
         
         return scene
     }
     
-    private func createPointCloudGeometry(from points: [DepthPoint]) -> SCNGeometry {
-        // Create custom geometry with vertices
-        var vertices: [SCNVector3] = []
-        var colors: [SCNVector3] = []
+    private func convertTo3DCoordinates(from points: [DepthPoint]) -> [SCNVector3] {
+        guard !points.isEmpty else { return [] }
         
-        // Find depth range for color mapping
-        let minDepth = points.map { $0.depth }.min() ?? 0
-        let maxDepth = points.map { $0.depth }.max() ?? 1
-        let depthRange = maxDepth - minDepth
+        var pointCloud3D: [SCNVector3] = []
+        
+        // Use the original scaling approach that was working
+        for point in points {
+            // Original scaling: X/100, -depth*10, Y/100
+            let vertex = SCNVector3(
+                x: point.x / 100.0,        // Scale down for visualization
+                y: -point.depth * 10.0,    // Depth becomes height (negative for proper orientation)
+                z: point.y / 100.0         // Y becomes Z
+            )
+            pointCloud3D.append(vertex)
+        }
+        
+        // Center the point cloud
+        let bbox = calculateBoundingBox(pointCloud3D)
+        let center = SCNVector3(
+            (bbox.min.x + bbox.max.x) / 2.0,
+            (bbox.min.y + bbox.max.y) / 2.0,
+            (bbox.min.z + bbox.max.z) / 2.0
+        )
+        
+        // Apply centering
+        for i in 0..<pointCloud3D.count {
+            pointCloud3D[i] = SCNVector3(
+                pointCloud3D[i].x - center.x,
+                pointCloud3D[i].y - center.y,
+                pointCloud3D[i].z - center.z
+            )
+        }
+        
+        return pointCloud3D
+    }
+    
+    private func calculateBoundingBox(_ points: [SCNVector3]) -> (min: SCNVector3, max: SCNVector3) {
+        guard !points.isEmpty else { return (SCNVector3(0, 0, 0), SCNVector3(0, 0, 0)) }
+        
+        var minX = points[0].x, maxX = points[0].x
+        var minY = points[0].y, maxY = points[0].y
+        var minZ = points[0].z, maxZ = points[0].z
         
         for point in points {
-            // Convert to 3D coordinates
-            // X stays X, Y becomes Z (depth in scene), depth becomes Y (height)
-            let vertex = SCNVector3(
-                x: point.x / 100.0,  // Scale down for better visualization
-                y: -point.depth * 10.0,  // Depth becomes height (negative for proper orientation)
-                z: point.y / 100.0   // Y becomes Z
-            )
-            vertices.append(vertex)
+            minX = Swift.min(minX, point.x)
+            maxX = Swift.max(maxX, point.x)
+            minY = Swift.min(minY, point.y)
+            maxY = Swift.max(maxY, point.y)
+            minZ = Swift.min(minZ, point.z)
+            maxZ = Swift.max(maxZ, point.z)
+        }
+        
+        return (SCNVector3(minX, minY, minZ), SCNVector3(maxX, maxY, maxZ))
+    }
+    
+    private func createVoxelGeometry(from pointCloud3D: [SCNVector3]) -> SCNGeometry {
+        guard !pointCloud3D.isEmpty else { return SCNGeometry() }
+        
+        // Calculate bounding box
+        let bbox = calculateBoundingBox(pointCloud3D)
+        let min = bbox.min
+        let max = bbox.max
+        
+        let boundingBoxVolume = (max.x - min.x) * (max.y - min.y) * (max.z - min.z)
+        
+        // Calculate voxel size to fit 1 million voxels
+        let maxVoxels: Float = 1_000_000
+        let voxelVolume = boundingBoxVolume / maxVoxels
+        var voxelSize = pow(voxelVolume, 1.0/3.0)
+        
+        // Calculate grid dimensions and ensure we don't exceed voxel limit
+        var gridX = Int(ceil((max.x - min.x) / voxelSize))
+        var gridY = Int(ceil((max.y - min.y) / voxelSize))
+        var gridZ = Int(ceil((max.z - min.z) / voxelSize))
+        
+        // If total exceeds limit, increase voxel size
+        while gridX * gridY * gridZ > Int(maxVoxels) {
+            voxelSize *= 1.01
+            gridX = Int(ceil((max.x - min.x) / voxelSize))
+            gridY = Int(ceil((max.y - min.y) / voxelSize))
+            gridZ = Int(ceil((max.z - min.z) / voxelSize))
+        }
+        
+        print("Voxel Grid: \(gridX) x \(gridY) x \(gridZ) = \(gridX * gridY * gridZ) voxels")
+        print("Voxel size: \(voxelSize * 1000) mm")
+        
+        // Create spatial hash for surface points
+        var surfaceVoxels = Set<String>()
+        
+        for point in pointCloud3D {
+            let vx = Int((point.x - min.x) / voxelSize)
+            let vy = Int((point.y - min.y) / voxelSize)
+            let vz = Int((point.z - min.z) / voxelSize)
             
-            // Color based on depth (closer = red, farther = blue)
-            let normalizedDepth = depthRange > 0 ? (point.depth - minDepth) / depthRange : 0
+            // Clamp to grid bounds
+            let clampedVx = Swift.max(0, Swift.min(gridX - 1, vx))
+            let clampedVy = Swift.max(0, Swift.min(gridY - 1, vy))
+            let clampedVz = Swift.max(0, Swift.min(gridZ - 1, vz))
+            
+            surfaceVoxels.insert("\(clampedVx),\(clampedVy),\(clampedVz)")
+        }
+        
+        // Fill interior using layer-by-layer approach
+        var filledVoxels = Set<String>()
+        
+        for z in 0..<gridZ {
+            // Get surface points in this layer
+            var layerSurface: [(x: Int, y: Int)] = []
+            for voxelKey in surfaceVoxels {
+                let components = voxelKey.split(separator: ",")
+                let vz = Int(components[2])!
+                if vz == z {
+                    let vx = Int(components[0])!
+                    let vy = Int(components[1])!
+                    layerSurface.append((x: vx, y: vy))
+                }
+            }
+            
+            if layerSurface.count < 3 { continue }
+            
+            // Find convex hull of surface points in this layer
+            let hull = convexHull2D(layerSurface)
+            
+            // Fill all voxels inside the hull
+            let minX = layerSurface.map { $0.x }.min()!
+            let maxX = layerSurface.map { $0.x }.max()!
+            let minY = layerSurface.map { $0.y }.min()!
+            let maxY = layerSurface.map { $0.y }.max()!
+            
+            for x in minX...maxX {
+                for y in minY...maxY {
+                    if pointInPolygon2D((x: x, y: y), hull) {
+                        filledVoxels.insert("\(x),\(y),\(z)")
+                    }
+                }
+            }
+        }
+        
+        // Include surface voxels
+        filledVoxels.formUnion(surfaceVoxels)
+        
+        guard !filledVoxels.isEmpty else { return SCNGeometry() }
+        
+        print("Generated \(filledVoxels.count) voxel cubes")
+        
+        // Create geometry
+        var voxelVertices: [SCNVector3] = []
+        var voxelColors: [SCNVector3] = []
+        
+        let halfSize = voxelSize * 0.5
+        
+        for voxelKey in filledVoxels {
+            let components = voxelKey.split(separator: ",")
+            let vx = Int(components[0])!
+            let vy = Int(components[1])!
+            let vz = Int(components[2])!
+            
+            let centerX = min.x + (Float(vx) + 0.5) * voxelSize
+            let centerY = min.y + (Float(vy) + 0.5) * voxelSize
+            let centerZ = min.z + (Float(vz) + 0.5) * voxelSize
+            
+            // Create 8 vertices for cube
+            let cubeVertices = [
+                SCNVector3(centerX - halfSize, centerY - halfSize, centerZ - halfSize),
+                SCNVector3(centerX + halfSize, centerY - halfSize, centerZ - halfSize),
+                SCNVector3(centerX + halfSize, centerY + halfSize, centerZ - halfSize),
+                SCNVector3(centerX - halfSize, centerY + halfSize, centerZ - halfSize),
+                SCNVector3(centerX - halfSize, centerY - halfSize, centerZ + halfSize),
+                SCNVector3(centerX + halfSize, centerY - halfSize, centerZ + halfSize),
+                SCNVector3(centerX + halfSize, centerY + halfSize, centerZ + halfSize),
+                SCNVector3(centerX - halfSize, centerY + halfSize, centerZ + halfSize)
+            ]
+            
+            voxelVertices.append(contentsOf: cubeVertices)
+            
+            // Color based on depth (Z coordinate)
+            let normalizedDepth = (centerZ - min.z) / (max.z - min.z)
+            let voxelColor = depthToColor(normalizedDepth)
+            
+            for _ in 0..<8 {
+                voxelColors.append(voxelColor)
+            }
+        }
+        
+        // Create geometry sources
+        let vertexData = Data(bytes: voxelVertices, count: voxelVertices.count * MemoryLayout<SCNVector3>.size)
+        let vertexSource = SCNGeometrySource(
+            data: vertexData,
+            semantic: .vertex,
+            vectorCount: voxelVertices.count,
+            usesFloatComponents: true,
+            componentsPerVector: 3,
+            bytesPerComponent: MemoryLayout<Float>.size,
+            dataOffset: 0,
+            dataStride: MemoryLayout<SCNVector3>.size
+        )
+        
+        let colorData = Data(bytes: voxelColors, count: voxelColors.count * MemoryLayout<SCNVector3>.size)
+        let colorSource = SCNGeometrySource(
+            data: colorData,
+            semantic: .color,
+            vectorCount: voxelColors.count,
+            usesFloatComponents: true,
+            componentsPerVector: 3,
+            bytesPerComponent: MemoryLayout<Float>.size,
+            dataOffset: 0,
+            dataStride: MemoryLayout<SCNVector3>.size
+        )
+        
+        // Create indices for cube faces
+        var indices: [UInt32] = []
+        let cubeIndices: [UInt32] = [
+            0, 1, 2,  2, 3, 0,  // Front
+            4, 5, 6,  6, 7, 4,  // Back
+            0, 4, 7,  7, 3, 0,  // Left
+            1, 5, 6,  6, 2, 1,  // Right
+            3, 2, 6,  6, 7, 3,  // Top
+            0, 1, 5,  5, 4, 0   // Bottom
+        ]
+        
+        for cubeIndex in 0..<(voxelVertices.count / 8) {
+            let baseIndex = UInt32(cubeIndex * 8)
+            for index in cubeIndices {
+                indices.append(baseIndex + index)
+            }
+        }
+        
+        let indexData = Data(bytes: indices, count: indices.count * MemoryLayout<UInt32>.size)
+        let element = SCNGeometryElement(
+            data: indexData,
+            primitiveType: .triangles,
+            primitiveCount: indices.count / 3,
+            bytesPerIndex: MemoryLayout<UInt32>.size
+        )
+        
+        let geometry = SCNGeometry(sources: [vertexSource, colorSource], elements: [element])
+        
+        // Configure material
+        let material = SCNMaterial()
+        material.lightingModel = .lambert
+        material.isDoubleSided = true
+        material.transparency = 0.7
+        geometry.materials = [material]
+        
+        return geometry
+    }
+    
+    private func convexHull2D(_ points: [(x: Int, y: Int)]) -> [(x: Int, y: Int)] {
+        if points.count < 3 { return points }
+        
+        // Remove duplicates
+        let uniquePoints = Array(Set(points.map { "\($0.x),\($0.y)" }))
+            .compactMap { key -> (x: Int, y: Int)? in
+                let parts = key.split(separator: ",")
+                guard parts.count == 2,
+                      let x = Int(parts[0]),
+                      let y = Int(parts[1]) else { return nil }
+                return (x: x, y: y)
+            }
+        
+        if uniquePoints.count < 3 { return uniquePoints }
+        
+        // Find bottommost point
+        var start = uniquePoints[0]
+        for p in uniquePoints {
+            if p.y < start.y || (p.y == start.y && p.x < start.x) {
+                start = p
+            }
+        }
+        
+        // Sort by polar angle
+        let others = uniquePoints.filter { $0.x != start.x || $0.y != start.y }
+        let sorted = others.sorted { a, b in
+            let angleA = atan2(Double(a.y - start.y), Double(a.x - start.x))
+            let angleB = atan2(Double(b.y - start.y), Double(b.x - start.x))
+            return angleA < angleB
+        }
+        
+        // Build convex hull
+        var hull = [start]
+        for point in sorted {
+            while hull.count >= 2 {
+                let cross = (hull[hull.count-1].x - hull[hull.count-2].x) * (point.y - hull[hull.count-2].y) -
+                           (hull[hull.count-1].y - hull[hull.count-2].y) * (point.x - hull[hull.count-2].x)
+                if cross > 0 { break }
+                hull.removeLast()
+            }
+            hull.append(point)
+        }
+        
+        return hull
+    }
+    
+    private func pointInPolygon2D(_ point: (x: Int, y: Int), _ polygon: [(x: Int, y: Int)]) -> Bool {
+        if polygon.count < 3 { return false }
+        
+        var inside = false
+        var j = polygon.count - 1
+        
+        for i in 0..<polygon.count {
+            if ((polygon[i].y > point.y) != (polygon[j].y > point.y)) &&
+               (point.x < (polygon[j].x - polygon[i].x) * (point.y - polygon[i].y) / (polygon[j].y - polygon[i].y) + polygon[i].x) {
+                inside = !inside
+            }
+            j = i
+        }
+        
+        return inside
+    }
+    
+    private func createPointCloudGeometry(from pointCloud3D: [SCNVector3]) -> SCNGeometry {
+        guard !pointCloud3D.isEmpty else { return SCNGeometry() }
+        
+        // Create colors based on Z coordinate (depth)
+        let bbox = calculateBoundingBox(pointCloud3D)
+        let depthRange = bbox.max.z - bbox.min.z
+        
+        var colors: [SCNVector3] = []
+        for point in pointCloud3D {
+            let normalizedDepth = depthRange > 0 ? (point.z - bbox.min.z) / depthRange : 0
             let color = depthToColor(normalizedDepth)
             colors.append(color)
         }
         
         // Create geometry source for vertices
-        let vertexData = Data(bytes: vertices, count: vertices.count * MemoryLayout<SCNVector3>.size)
+        let vertexData = Data(bytes: pointCloud3D, count: pointCloud3D.count * MemoryLayout<SCNVector3>.size)
         let vertexSource = SCNGeometrySource(
             data: vertexData,
             semantic: .vertex,
-            vectorCount: vertices.count,
+            vectorCount: pointCloud3D.count,
             usesFloatComponents: true,
             componentsPerVector: 3,
             bytesPerComponent: MemoryLayout<Float>.size,
@@ -1280,12 +1583,12 @@ struct DepthVisualization3DView: View {
         )
         
         // Create indices for points
-        let indices: [UInt32] = Array(0..<UInt32(vertices.count))
+        let indices: [UInt32] = Array(0..<UInt32(pointCloud3D.count))
         let indexData = Data(bytes: indices, count: indices.count * MemoryLayout<UInt32>.size)
         let element = SCNGeometryElement(
             data: indexData,
             primitiveType: .point,
-            primitiveCount: vertices.count,
+            primitiveCount: pointCloud3D.count,
             bytesPerIndex: MemoryLayout<UInt32>.size
         )
         
@@ -1323,53 +1626,65 @@ struct DepthVisualization3DView: View {
         }
     }
     
-    private func centerObject(_ node: SCNNode, points: [DepthPoint]) {
-        guard !points.isEmpty else { return }
-        
-        let minX = points.map { $0.x }.min() ?? 0
-        let maxX = points.map { $0.x }.max() ?? 0
-        let minY = points.map { $0.y }.min() ?? 0
-        let maxY = points.map { $0.y }.max() ?? 0
-        
-        let centerX = (minX + maxX) / 2.0 / 100.0
-        let centerZ = (minY + maxY) / 2.0 / 100.0
-        
-        node.position = SCNVector3(-centerX, 0, -centerZ)
-    }
+
     
     private func setupLighting(scene: SCNScene) {
         // Ambient light
         let ambientLight = SCNLight()
         ambientLight.type = .ambient
         ambientLight.color = UIColor.white
-        ambientLight.intensity = 300
+        ambientLight.intensity = 400
         let ambientNode = SCNNode()
         ambientNode.light = ambientLight
         scene.rootNode.addChildNode(ambientNode)
         
-        // Directional light
+        // Main directional light
         let directionalLight = SCNLight()
         directionalLight.type = .directional
         directionalLight.color = UIColor.white
-        directionalLight.intensity = 500
+        directionalLight.intensity = 600
         let lightNode = SCNNode()
         lightNode.light = directionalLight
-        lightNode.position = SCNVector3(0, 10, 10)
+        lightNode.position = SCNVector3(10, 15, 10)
         lightNode.look(at: SCNVector3(0, 0, 0))
         scene.rootNode.addChildNode(lightNode)
+        
+        // Secondary light for better voxel visibility
+        let secondaryLight = SCNLight()
+        secondaryLight.type = .directional
+        secondaryLight.color = UIColor.white
+        secondaryLight.intensity = 300
+        let secondaryLightNode = SCNNode()
+        secondaryLightNode.light = secondaryLight
+        secondaryLightNode.position = SCNVector3(-10, 10, -10)
+        secondaryLightNode.look(at: SCNVector3(0, 0, 0))
+        scene.rootNode.addChildNode(secondaryLightNode)
     }
     
-    private func setupCamera(scene: SCNScene, points: [DepthPoint]) {
+    private func setupCamera(scene: SCNScene, pointCloud: [SCNVector3]) {
         let camera = SCNCamera()
         camera.automaticallyAdjustsZRange = true
+        camera.zNear = 0.001
+        camera.zFar = 100.0
         let cameraNode = SCNNode()
         cameraNode.camera = camera
         
-        // Position camera to get a good view of the object
-        let maxDepth = points.map { $0.depth }.max() ?? 1
-        let cameraDistance = Double(maxDepth * 15.0) // Adjust multiplier as needed
-        cameraNode.position = SCNVector3(0, cameraDistance * 0.3, cameraDistance)
-        cameraNode.look(at: SCNVector3(0, 0, 0))
+        if !pointCloud.isEmpty {
+            let bbox = calculateBoundingBox(pointCloud)
+            let size = SCNVector3(
+                bbox.max.x - bbox.min.x,
+                bbox.max.y - bbox.min.y,
+                bbox.max.z - bbox.min.z
+            )
+            let maxDim = Swift.max(size.x, Swift.max(size.y, size.z))
+            let distance = maxDim * 3.0
+            
+            cameraNode.position = SCNVector3(distance, distance * 0.5, distance)
+            cameraNode.look(at: SCNVector3(0, 0, 0))
+        } else {
+            cameraNode.position = SCNVector3(0.5, 0.5, 0.5)
+            cameraNode.look(at: SCNVector3(0, 0, 0))
+        }
         
         scene.rootNode.addChildNode(cameraNode)
     }
