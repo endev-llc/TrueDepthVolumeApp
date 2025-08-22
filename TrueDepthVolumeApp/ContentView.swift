@@ -1370,21 +1370,22 @@ struct DepthVisualization3DView: View {
         
         var measurementPoints3D: [SCNVector3] = []
         
-        // Use camera intrinsics if available (100% accurate!)
-        if let intrinsics = cameraIntrinsics {
-            print("🎯 Using camera intrinsics from CSV for 100% accurate coordinates!")
-            print("  📐 fx=\(intrinsics.fx), fy=\(intrinsics.fy), cx=\(intrinsics.cx), cy=\(intrinsics.cy)")
+        // Use camera intrinsics for 100% accurate coordinates
+        guard let intrinsics = cameraIntrinsics else {
+            print("❌ No camera intrinsics available - cannot create 3D visualization")
+            return []
+        }
+        
+        print("🎯 Using camera intrinsics from CSV for 100% accurate coordinates!")
+        print("  🔍 fx=\(intrinsics.fx), fy=\(intrinsics.fy), cx=\(intrinsics.cx), cy=\(intrinsics.cy)")
+        
+        for point in points {
+            // Perfect camera projection math using real intrinsics
+            let realWorldX = (point.x - intrinsics.cx) * point.depth / intrinsics.fx // calibration factor i think would go here
+            let realWorldY = (point.y - intrinsics.cy) * point.depth / intrinsics.fy
+            let realWorldZ = point.depth
             
-            for point in points {
-                // Perfect camera projection math using real intrinsics
-                let realWorldX = (point.x - intrinsics.cx) * point.depth / intrinsics.fx // calibration factor i think would go here
-                let realWorldY = (point.y - intrinsics.cy) * point.depth / intrinsics.fy
-                let realWorldZ = point.depth
-                
-                measurementPoints3D.append(SCNVector3(realWorldX, realWorldY, realWorldZ))
-            }
-            
-        } else {
+            measurementPoints3D.append(SCNVector3(realWorldX, realWorldY, realWorldZ))
         }
         
         // Center the measurement point cloud
@@ -1404,199 +1405,6 @@ struct DepthVisualization3DView: View {
         }
         
         return measurementPoints3D
-    }
-    
-
-
-    
-    private func calculateRealWorldScale(from points: [DepthPoint]) -> Float {
-        // Derive real-world X,Y scale purely from depth data using geometric analysis
-        // This approach uses no hardcoded camera parameters
-        
-        print("Deriving real-world scale from depth data...")
-        
-        // Method: Analyze local surface patches to determine pixel-to-meter conversion
-        var scaleEstimates: [Float] = []
-        
-        // Sample points for analysis (limit for performance)
-        let sampleCount = min(points.count, 2000)
-        let stepSize = max(1, points.count / sampleCount)
-        let samplePoints = stride(from: 0, to: points.count, by: stepSize).map { points[$0] }
-        
-        // For each point, analyze its local neighborhood
-        for i in 0..<samplePoints.count {
-            let centerPoint = samplePoints[i]
-            
-            // Find nearby points within a reasonable pixel radius
-            var neighbors: [DepthPoint] = []
-            for j in 0..<samplePoints.count {
-                if i == j { continue }
-                let neighbor = samplePoints[j]
-                
-                let pixelDistance = sqrt(pow(neighbor.x - centerPoint.x, 2) + pow(neighbor.y - centerPoint.y, 2))
-                
-                // Look for neighbors within 10-50 pixel radius
-                if pixelDistance >= 10.0 && pixelDistance <= 50.0 && abs(neighbor.depth - centerPoint.depth) < centerPoint.depth * 0.1 {
-                    neighbors.append(neighbor)
-                }
-            }
-            
-            // Need at least 3 neighbors to estimate local surface geometry
-            if neighbors.count >= 3 {
-                // Estimate local scale using triangulation method
-                if let localScale = estimateLocalScale(center: centerPoint, neighbors: neighbors) {
-                    scaleEstimates.append(localScale)
-                }
-            }
-        }
-        
-        // Use robust statistics to get final scale
-        if !scaleEstimates.isEmpty {
-            // Remove outliers (keep middle 60% of estimates)
-            scaleEstimates.sort()
-            let trimCount = scaleEstimates.count / 5 // Remove 20% from each end
-            let trimmedEstimates = Array(scaleEstimates.dropFirst(trimCount).dropLast(trimCount))
-            
-            if !trimmedEstimates.isEmpty {
-                let finalScale = trimmedEstimates.reduce(0, +) / Float(trimmedEstimates.count)
-                print("Derived scale from \(trimmedEstimates.count) surface patches: \(finalScale) meters per pixel")
-                print("Scale range: \(trimmedEstimates.min()!) to \(trimmedEstimates.max()!) meters per pixel")
-                return finalScale
-            }
-        }
-        
-        // Fallback: Use depth-gradient method if surface analysis fails
-        print("Surface analysis insufficient, using depth-gradient method...")
-        return calculateScaleFromDepthGradients(points: points)
-    }
-    
-    private func estimateLocalScale(center: DepthPoint, neighbors: [DepthPoint]) -> Float? {
-        // Use geometric analysis of local surface patch to determine real-world scale
-        
-        // Select the 3 nearest neighbors to form a local triangle
-        let sortedNeighbors = neighbors.sorted { neighbor1, neighbor2 in
-            let dist1 = sqrt(pow(neighbor1.x - center.x, 2) + pow(neighbor1.y - center.y, 2))
-            let dist2 = sqrt(pow(neighbor2.x - center.x, 2) + pow(neighbor2.y - center.y, 2))
-            return dist1 < dist2
-        }
-        
-        guard sortedNeighbors.count >= 3 else { return nil }
-        
-        let p1 = center
-        let p2 = sortedNeighbors[0]
-        let p3 = sortedNeighbors[1]
-        let p4 = sortedNeighbors[2]
-        
-        // Calculate pixel distances
-        let pixelDist12 = sqrt(pow(p2.x - p1.x, 2) + pow(p2.y - p1.y, 2))
-        let pixelDist13 = sqrt(pow(p3.x - p1.x, 2) + pow(p3.y - p1.y, 2))
-        let pixelDist14 = sqrt(pow(p4.x - p1.x, 2) + pow(p4.y - p1.y, 2))
-        
-        // Skip if points are too close in pixels
-        guard pixelDist12 > 5 && pixelDist13 > 5 && pixelDist14 > 5 else { return nil }
-        
-        // For each pair, estimate the real-world distance using depth information
-        // Key insight: If we assume small angular differences, the real-world distance
-        // between two points can be approximated using their depth values
-        
-        var scaleEstimates: [Float] = []
-        
-        // Estimate scale from each pair
-        for (pointA, pointB, pixelDist) in [(p1, p2, pixelDist12), (p1, p3, pixelDist13), (p1, p4, pixelDist14)] {
-            // Calculate 3D real-world distance using depth values
-            // This uses the fact that depth is already accurate
-            let avgDepth = (pointA.depth + pointB.depth) / 2.0
-            let depthDiff = pointB.depth - pointA.depth
-            
-            // For small angles, the real-world lateral distance is approximately:
-            // lateral_distance ≈ sqrt(total_3D_distance² - depth_difference²)
-            // where total_3D_distance is what we're trying to find
-            
-            // Use the principle that for nearby points on a surface,
-            // the 3D distance is related to depth change and angular separation
-            
-            // Estimate the angular separation in radians
-            // For small angles: real_world_lateral_distance = avgDepth * angular_separation
-            // We need to find angular_separation from pixel separation
-            
-            // Use geometric constraint: if the surface is locally planar,
-            // the ratio of pixel distance to depth change gives us scale information
-            
-            if abs(depthDiff) > 0.001 { // At least 1mm depth difference
-                // Use depth gradient to estimate scale
-                let depthGradient = abs(depthDiff) / pixelDist // meters per pixel in depth direction
-                
-                // For a tilted surface, the scale in the X,Y plane is related to
-                // the average depth and the geometry of the tilt
-                let estimatedScale = avgDepth * 0.001 // Conservative estimate based on typical viewing angles
-                scaleEstimates.append(estimatedScale)
-            } else {
-                // Points are at similar depth - use angular estimation
-                // For points at similar depth, use small angle approximation
-                let angularSeparation = pixelDist / avgDepth // This assumes focal length ≈ avgDepth, which we'll refine
-                let realWorldDistance = avgDepth * angularSeparation
-                let scale = realWorldDistance / pixelDist
-                
-                // Sanity check: scale should be in reasonable range for cameras
-                if scale > 0.0005 && scale < 0.005 { // 0.5mm to 5mm per pixel is reasonable
-                    scaleEstimates.append(scale)
-                }
-            }
-        }
-        
-        // Return median of estimates if we have enough data
-        if scaleEstimates.count >= 2 {
-            scaleEstimates.sort()
-            return scaleEstimates[scaleEstimates.count / 2]
-        }
-        
-        return nil
-    }
-    
-    private func calculateScaleFromDepthGradients(points: [DepthPoint]) -> Float {
-        // Fallback method: analyze depth gradients to estimate scale
-        
-        var gradientScales: [Float] = []
-        
-        // Look for points with significant depth gradients
-        for i in 0..<min(points.count - 1, 1000) {
-            let p1 = points[i]
-            let p2 = points[i + 1]
-            
-            let pixelDistance = sqrt(pow(p2.x - p1.x, 2) + pow(p2.y - p1.y, 2))
-            let depthDiff = abs(p2.depth - p1.depth)
-            let avgDepth = (p1.depth + p2.depth) / 2.0
-            
-            // Skip if points are too close or too far in pixels
-            guard pixelDistance > 3.0 && pixelDistance < 30.0 else { continue }
-            
-            // Skip if no significant depth difference
-            guard depthDiff > 0.001 else { continue }
-            
-            // For points with depth gradients, estimate the scale using geometry
-            // The key insight: depth gradient + pixel distance gives us surface orientation
-            let surfaceAngle = atan2(depthDiff, pixelDistance * avgDepth * 0.001) // Rough estimate
-            
-            // Use this to estimate the real-world pixel scale
-            let estimatedScale = avgDepth * 0.001 / cos(surfaceAngle)
-            
-            if estimatedScale > 0.0003 && estimatedScale < 0.01 { // Sanity check
-                gradientScales.append(estimatedScale)
-            }
-        }
-        
-        if !gradientScales.isEmpty {
-            gradientScales.sort()
-            let medianScale = gradientScales[gradientScales.count / 2]
-            print("Gradient-derived scale: \(medianScale) meters per pixel")
-            return medianScale
-        } else {
-            // Final fallback: use average depth to estimate scale
-            let avgDepth = points.map { $0.depth }.reduce(0, +) / Float(points.count)
-            let fallbackScale = avgDepth * 0.0012 // Conservative estimate
-            print("Using depth-based fallback scale: \(fallbackScale) meters per pixel")
-            return fallbackScale
-        }
     }
     
     private func calculateBoundingBox(_ points: [SCNVector3]) -> (min: SCNVector3, max: SCNVector3) {
