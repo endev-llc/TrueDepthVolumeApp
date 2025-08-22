@@ -10,11 +10,14 @@ import AVFoundation
 import MediaPlayer
 import CoreGraphics
 import UIKit
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @StateObject private var cameraManager = CameraManager()
     @StateObject private var volumeManager = VolumeButtonManager()
     @State private var showOverlayView = false
+    @State private var uploadedCSVFile: URL?
+    @State private var showDocumentPicker = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -39,6 +42,18 @@ struct ContentView: View {
                         .foregroundColor(.white)
                         .padding()
                         .background(Color.blue)
+                        .cornerRadius(15)
+                }
+                
+                Button(action: {
+                    showDocumentPicker = true
+                }) {
+                    Text("Upload CSV")
+                        .font(.headline)
+                        .fontWeight(.bold)
+                        .foregroundColor(.white)
+                        .padding()
+                        .background(Color.cyan)
                         .cornerRadius(15)
                 }
                 
@@ -79,20 +94,20 @@ struct ContentView: View {
                         }
                         .disabled(cameraManager.fileToShare == nil && cameraManager.croppedFileToShare == nil)
                     }
-                    
-                    // 3D View button (only show if we have a cropped file)
-                    if cameraManager.croppedFileToShare != nil {
-                        Button(action: {
-                            cameraManager.show3DView = true
-                        }) {
-                            Text("View 3D")
-                                .font(.headline)
-                                .fontWeight(.bold)
-                                .foregroundColor(.white)
-                                .padding()
-                                .background(Color.purple)
-                                .cornerRadius(15)
-                        }
+                }
+                
+                // 3D View button (show if we have uploaded CSV or cropped file)
+                if uploadedCSVFile != nil || cameraManager.croppedFileToShare != nil {
+                    Button(action: {
+                        cameraManager.show3DView = true
+                    }) {
+                        Text("View 3D")
+                            .font(.headline)
+                            .fontWeight(.bold)
+                            .foregroundColor(.white)
+                            .padding()
+                            .background(Color.purple)
+                            .cornerRadius(15)
                     }
                 }
                 
@@ -125,6 +140,9 @@ struct ContentView: View {
                 ShareSheet(items: [fileURL])
             }
         }
+        .sheet(isPresented: $showDocumentPicker) {
+            DocumentPicker(selectedFileURL: $uploadedCSVFile)
+        }
         .fullScreenCover(isPresented: $showOverlayView) {
             if let depthImage = cameraManager.capturedDepthImage,
                let photo = cameraManager.capturedPhoto {
@@ -137,7 +155,13 @@ struct ContentView: View {
             }
         }
         .fullScreenCover(isPresented: $cameraManager.show3DView) {
-            if let croppedFileURL = cameraManager.croppedFileToShare {
+            // Prioritize uploaded CSV, then fall back to cropped file
+            if let uploadedCSV = uploadedCSVFile {
+                DepthVisualization3DView(
+                    csvFileURL: uploadedCSV,
+                    onDismiss: { cameraManager.show3DView = false }
+                )
+            } else if let croppedFileURL = cameraManager.croppedFileToShare {
                 DepthVisualization3DView(
                     csvFileURL: croppedFileURL,
                     onDismiss: { cameraManager.show3DView = false }
@@ -949,7 +973,7 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
                 }
                 
                 print("✅ Depth data saved successfully!")
-                print("📍 File location: \(fileURL.path)")
+                print("📁 File location: \(fileURL.path)")
                 print("📊 Dimensions: \(width) x \(height)")
                 print("📊 Valid pixels: \(validPixelCount)/\(width * height)")
                 if cropPath != nil {
@@ -995,6 +1019,56 @@ struct ShareSheet: UIViewControllerRepresentable {
     }
     
     func updateUIViewController(_ uiView: UIActivityViewController, context: Context) {}
+}
+
+// MARK: - Document Picker
+struct DocumentPicker: UIViewControllerRepresentable {
+    @Binding var selectedFileURL: URL?
+    
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.commaSeparatedText], asCopy: true)
+        picker.delegate = context.coordinator
+        picker.allowsMultipleSelection = false
+        return picker
+    }
+    
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+    
+    class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let parent: DocumentPicker
+        
+        init(_ parent: DocumentPicker) {
+            self.parent = parent
+        }
+        
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            guard let url = urls.first else { return }
+            
+            // Copy the file to app's documents directory to ensure persistent access
+            let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            let destinationURL = documentsDirectory.appendingPathComponent("uploaded_\(url.lastPathComponent)")
+            
+            do {
+                // Remove existing file if it exists
+                if FileManager.default.fileExists(atPath: destinationURL.path) {
+                    try FileManager.default.removeItem(at: destinationURL)
+                }
+                
+                // Copy the selected file
+                try FileManager.default.copyItem(at: url, to: destinationURL)
+                
+                DispatchQueue.main.async {
+                    self.parent.selectedFileURL = destinationURL
+                }
+            } catch {
+                print("Error copying CSV file: \(error)")
+            }
+        }
+    }
 }
 
 // MARK: - 3D Depth Visualization View
