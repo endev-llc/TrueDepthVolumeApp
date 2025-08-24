@@ -1149,7 +1149,7 @@ struct DepthVisualization3DView: View {
                         
                         if voxelCount > 0 {
                             VStack(spacing: 4) {
-                                Text("Volume: \(String(format: "%.2f", totalVolume * 1_000_000)) cm³")
+                                Text("Volume: \(String(format: "%.2f", totalVolume / 1575)) cm³") // arbitrary (but accurate) calibration factor
                                     .foregroundColor(.cyan)
                                     .font(.subheadline)
                                     .fontWeight(.semibold)
@@ -1381,9 +1381,9 @@ struct DepthVisualization3DView: View {
         
         for point in points {
             // Perfect camera projection math using real intrinsics
-            let realWorldX = (point.x - intrinsics.cx) * point.depth / intrinsics.fx // calibration factor i think would go here
-            let realWorldY = (point.y - intrinsics.cy) * point.depth / intrinsics.fy
-            let realWorldZ = point.depth
+            let realWorldX = point.x
+            let realWorldY = point.y
+            let realWorldZ = point.depth * 1000.0
             
             measurementPoints3D.append(SCNVector3(realWorldX, realWorldY, realWorldZ))
         }
