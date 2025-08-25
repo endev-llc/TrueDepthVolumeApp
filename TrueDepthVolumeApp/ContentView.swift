@@ -1149,7 +1149,7 @@ struct DepthVisualization3DView: View {
                         
                         if voxelCount > 0 {
                             VStack(spacing: 4) {
-                                Text("Volume: \(String(format: "%.2f", totalVolume * 1_000_000)) cm³") // Convert m³ to cm³
+                                Text("Volume: \(String(format: "%.2f", totalVolume * 1_000_000)) cm³")
                                     .foregroundColor(.cyan)
                                     .font(.subheadline)
                                     .fontWeight(.semibold)
@@ -1377,32 +1377,29 @@ struct DepthVisualization3DView: View {
         
         print("🔧 APPLYING RESOLUTION SCALING CORRECTIONS")
         
-        // CORRECTION 1: Scale intrinsics to match typical iPhone TrueDepth values
-        // Your fx=2744 vs typical 600-800 suggests 4x scaling issue
-        let scaleFactor: Float = 0.25  // This brings fx from 2744 to 686 (in typical range)
-        let correctedFx = intrinsics.fx * scaleFactor
-        let correctedFy = intrinsics.fy * scaleFactor
-        let correctedCx = intrinsics.cx * scaleFactor
-        let correctedCy = intrinsics.cy * scaleFactor
+        // CORRECTION: Scale intrinsics from 4032x2268 to 640x360 resolution
+        let resolutionScaleX: Float = 640.0 / 4032.0   // = 0.1587
+        let resolutionScaleY: Float = 360.0 / 2268.0   // = 0.1587
         
-        print("📐 Corrected Intrinsics:")
-        print("  Original: fx=\(intrinsics.fx), fy=\(intrinsics.fy)")
-        print("  Corrected: fx=\(correctedFx), fy=\(correctedFy)")
+        let correctedFx = intrinsics.fx * resolutionScaleX
+        let correctedFy = intrinsics.fy * resolutionScaleY
+        let correctedCx = intrinsics.cx * resolutionScaleX
+        let correctedCy = intrinsics.cy * resolutionScaleY
         
-        // CORRECTION 2: Apply coordinate scaling to match intrinsic scaling
-        let coordinateScaleFactor: Float = scaleFactor  // Scale coordinates to match
+        print("📐 Resolution-Corrected Intrinsics:")
+        print("  Original (4032x2268): fx=\(intrinsics.fx), fy=\(intrinsics.fy)")
+        print("  Corrected (640x360): fx=\(correctedFx), fy=\(correctedFy)")
+        print("  Scale factors: \(resolutionScaleX)x")
         
         for point in points {
-            // Scale coordinates to match the corrected intrinsics
-            let scaledX = point.x
-            let scaledY = point.y
-            
-            // Keep depth as-is (already in meters)
+            // Coordinates are already at 640x360 resolution - use directly
+            let pixelX = point.x
+            let pixelY = point.y
             let depthInMeters = point.depth
             
-            // Unproject using corrected intrinsics and scaled coordinates
-            let realWorldX = (scaledX - correctedCx) * depthInMeters / correctedFx
-            let realWorldY = (scaledY - correctedCy) * depthInMeters / correctedFy
+            // Unproject using resolution-corrected intrinsics
+            let realWorldX = (pixelX - correctedCx) * depthInMeters / correctedFx
+            let realWorldY = (pixelY - correctedCy) * depthInMeters / correctedFy
             let realWorldZ = depthInMeters
             
             measurementPoints3D.append(SCNVector3(realWorldX, realWorldY, realWorldZ))
