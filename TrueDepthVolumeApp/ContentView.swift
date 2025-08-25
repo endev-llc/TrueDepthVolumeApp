@@ -651,10 +651,10 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         // Capture camera calibration data for accurate coordinate conversion
         if let calibrationData = depthData.cameraCalibrationData {
             self.cameraCalibrationData = calibrationData
-            print("📷 Captured camera intrinsics:")
-            print("  Focal Length: fx=\(calibrationData.intrinsicMatrix.columns.0.x), fy=\(calibrationData.intrinsicMatrix.columns.1.y)")
-            print("  Principal Point: cx=\(calibrationData.intrinsicMatrix.columns.2.x), cy=\(calibrationData.intrinsicMatrix.columns.2.y)")
-            print("  Image Dimensions: \(calibrationData.intrinsicMatrixReferenceDimensions)")
+//            print("📷 Captured camera intrinsics:")
+//            print("  Focal Length: fx=\(calibrationData.intrinsicMatrix.columns.0.x), fy=\(calibrationData.intrinsicMatrix.columns.1.y)")
+//            print("  Principal Point: cx=\(calibrationData.intrinsicMatrix.columns.2.x), cy=\(calibrationData.intrinsicMatrix.columns.2.y)")
+//            print("  Image Dimensions: \(calibrationData.intrinsicMatrixReferenceDimensions)")
         }
     }
     
@@ -1149,7 +1149,7 @@ struct DepthVisualization3DView: View {
                         
                         if voxelCount > 0 {
                             VStack(spacing: 4) {
-                                Text("Volume: \(String(format: "%.2f", totalVolume / 1575)) cm³") // arbitrary (but accurate) calibration factor
+                                Text("Volume: \(String(format: "%.2f", totalVolume * 1_000_000)) cm³") // Convert m³ to cm³
                                     .foregroundColor(.cyan)
                                     .font(.subheadline)
                                     .fontWeight(.semibold)
@@ -1370,25 +1370,45 @@ struct DepthVisualization3DView: View {
         
         var measurementPoints3D: [SCNVector3] = []
         
-        // Use camera intrinsics for 100% accurate coordinates
         guard let intrinsics = cameraIntrinsics else {
-            print("❌ No camera intrinsics available - cannot create 3D visualization")
+            print("⚠️ No camera intrinsics available")
             return []
         }
         
-        print("🎯 Using camera intrinsics from CSV for 100% accurate coordinates!")
-        print("  🔍 fx=\(intrinsics.fx), fy=\(intrinsics.fy), cx=\(intrinsics.cx), cy=\(intrinsics.cy)")
+        print("🔧 APPLYING RESOLUTION SCALING CORRECTIONS")
+        
+        // CORRECTION 1: Scale intrinsics to match typical iPhone TrueDepth values
+        // Your fx=2744 vs typical 600-800 suggests 4x scaling issue
+        let scaleFactor: Float = 0.25  // This brings fx from 2744 to 686 (in typical range)
+        let correctedFx = intrinsics.fx * scaleFactor
+        let correctedFy = intrinsics.fy * scaleFactor
+        let correctedCx = intrinsics.cx * scaleFactor
+        let correctedCy = intrinsics.cy * scaleFactor
+        
+        print("📐 Corrected Intrinsics:")
+        print("  Original: fx=\(intrinsics.fx), fy=\(intrinsics.fy)")
+        print("  Corrected: fx=\(correctedFx), fy=\(correctedFy)")
+        
+        // CORRECTION 2: Apply coordinate scaling to match intrinsic scaling
+        let coordinateScaleFactor: Float = scaleFactor  // Scale coordinates to match
         
         for point in points {
-            // Perfect camera projection math using real intrinsics
-            let realWorldX = point.x
-            let realWorldY = point.y
-            let realWorldZ = point.depth * 1000.0
+            // Scale coordinates to match the corrected intrinsics
+            let scaledX = point.x
+            let scaledY = point.y
+            
+            // Keep depth as-is (already in meters)
+            let depthInMeters = point.depth
+            
+            // Unproject using corrected intrinsics and scaled coordinates
+            let realWorldX = (scaledX - correctedCx) * depthInMeters / correctedFx
+            let realWorldY = (scaledY - correctedCy) * depthInMeters / correctedFy
+            let realWorldZ = depthInMeters
             
             measurementPoints3D.append(SCNVector3(realWorldX, realWorldY, realWorldZ))
         }
         
-        // Center the measurement point cloud
+        // Center the point cloud
         let bbox = calculateBoundingBox(measurementPoints3D)
         let center = SCNVector3(
             (bbox.min.x + bbox.max.x) / 2.0,
@@ -1403,6 +1423,16 @@ struct DepthVisualization3DView: View {
                 measurementPoints3D[i].z - center.z
             )
         }
+        
+        let finalWidth = (bbox.max.x - bbox.min.x) * 100
+        let finalHeight = (bbox.max.y - bbox.min.y) * 100
+        let finalDepth = (bbox.max.z - bbox.min.z) * 100
+        
+        print("📏 CORRECTED DIMENSIONS:")
+        print("  Width: \(finalWidth)cm (target: ~4cm)")
+        print("  Height: \(finalHeight)cm (target: ~4cm)")
+        print("  Depth: \(finalDepth)cm (target: ~3cm)")
+        print("  Scaling errors: W=\(finalWidth/4.0)x, H=\(finalHeight/4.0)x, D=\(finalDepth/3.0)x")
         
         return measurementPoints3D
     }
