@@ -1192,7 +1192,7 @@ struct DepthVisualization3DView: View {
                         
                         if voxelCount > 0 {
                             VStack(spacing: 4) {
-                                Text("Volume: \(String(format: "%.2f", totalVolume * 1_000_000)) cm³")
+                                Text("Volume: \(String(format: "%.2f", totalVolume * 1_000_000 * 0.7)) cm³") // 0.7x calibration factor
                                     .foregroundColor(.cyan)
                                     .font(.subheadline)
                                     .fontWeight(.semibold)
