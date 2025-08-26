@@ -892,12 +892,12 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
 
     // MARK: - Enhanced CSV Save Function with Cropping
     private func saveDepthDataToFile(depthData: AVDepthData, cropPath: [CGPoint]? = nil) {
+        // Always convert to depth data using Apple's calibrated conversion
         let processedDepthData: AVDepthData
-        let isDisparityData: Bool
         
         if depthData.depthDataType == kCVPixelFormatType_DisparityFloat16 ||
            depthData.depthDataType == kCVPixelFormatType_DisparityFloat32 {
-            isDisparityData = true
+            // Convert disparity to true depth values using Apple's calibrated conversion
             do {
                 processedDepthData = try depthData.converting(toDepthDataType: kCVPixelFormatType_DepthFloat32)
             } catch {
@@ -905,8 +905,13 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
                 return
             }
         } else {
-            isDisparityData = false
-            processedDepthData = depthData
+            // Already depth data, ensure it's Float32 format
+            do {
+                processedDepthData = try depthData.converting(toDepthDataType: kCVPixelFormatType_DepthFloat32)
+            } catch {
+                self.presentError("Failed to convert depth data format: \(error.localizedDescription)")
+                return
+            }
         }
         
         let depthMap = processedDepthData.depthDataMap
@@ -930,7 +935,7 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         let fileURL = documentsDirectory.appendingPathComponent(fileName)
         
         do {
-            var csvContent = "x,y,depth_meters,depth_geometry\n"
+            var csvContent = "x,y,depth_meters\n"
             
             // Add camera calibration data as comments (if available)
             if let calibrationData = self.cameraCalibrationData {
@@ -938,6 +943,14 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
                 csvContent += "# Camera Intrinsics: fx=\(intrinsics.columns.0.x), fy=\(intrinsics.columns.1.y), cx=\(intrinsics.columns.2.x), cy=\(intrinsics.columns.2.y)\n"
                 let dimensions = calibrationData.intrinsicMatrixReferenceDimensions
                 csvContent += "# Reference Dimensions: width=\(dimensions.width), height=\(dimensions.height)\n"
+            }
+            
+            // Add data source information
+            let originalDataType = depthData.depthDataType
+            if originalDataType == kCVPixelFormatType_DisparityFloat16 || originalDataType == kCVPixelFormatType_DisparityFloat32 {
+                csvContent += "# Original Data: Disparity (converted to depth using Apple's calibrated conversion)\n"
+            } else {
+                csvContent += "# Original Data: Depth\n"
             }
             
             var minDepth: Float = Float.infinity
@@ -948,7 +961,7 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
             for y in 0..<height {
                 for x in 0..<width {
                     let pixelIndex = y * (bytesPerRow / MemoryLayout<Float32>.stride) + x
-                    let depthValue = floatBuffer[pixelIndex]
+                    let depthValue = floatBuffer[pixelIndex] // This is now always true depth in meters
                     
                     // Check if cropping is enabled and if point is within the crop path
                     var shouldInclude = true
@@ -962,14 +975,8 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
                     }
                     
                     if shouldInclude {
-                        var processedDepth = depthValue
-                        if isDisparityData && depthValue > 0 {
-                            if depthValue < 1.0 {
-                                processedDepth = 1.0 / depthValue
-                            }
-                        }
-                        
-                        csvContent += "\(x),\(y),\(String(format: "%.6f", depthValue)),\(String(format: "%.6f", processedDepth))\n"
+                        // Save the true depth value (already converted from disparity if needed)
+                        csvContent += "\(x),\(y),\(String(format: "%.6f", depthValue))\n"
                         croppedPixelCount += 1
                         
                         if !depthValue.isNaN && !depthValue.isInfinite && depthValue > 0 {
@@ -995,14 +1002,22 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
                     self.fileToShare = fileURL
                 }
                 
-                print("✅ Depth data saved successfully!")
-                print("📁 File location: \(fileURL.path)")
-                print("📊 Dimensions: \(width) x \(height)")
-                print("📊 Valid pixels: \(validPixelCount)/\(width * height)")
+                print("Depth data saved successfully!")
+                print("File location: \(fileURL.path)")
+                print("Dimensions: \(width) x \(height)")
+                print("Valid pixels: \(validPixelCount)/\(width * height)")
                 if cropPath != nil {
-                    print("✂️ Cropped pixels: \(croppedPixelCount)/\(width * height)")
+                    print("Cropped pixels: \(croppedPixelCount)/\(width * height)")
                 }
-                print("📊 Depth range: \(String(format: "%.6f", validMinDepth))m - \(String(format: "%.6f", validMaxDepth))m")
+                print("Depth range: \(String(format: "%.6f", validMinDepth))m - \(String(format: "%.6f", validMaxDepth))m")
+                
+                // Log conversion information
+                let originalType = depthData.depthDataType
+                if originalType == kCVPixelFormatType_DisparityFloat16 || originalType == kCVPixelFormatType_DisparityFloat32 {
+                    print("Converted from disparity to true depth values using Apple's calibrated conversion")
+                } else {
+                    print("Original data was already in depth format")
+                }
             }
             
         } catch {
@@ -1259,25 +1274,31 @@ struct DepthVisualization3DView: View {
         if let intrinsics = cameraIntrinsics {
             print("🎯 Loaded camera intrinsics from CSV: fx=\(intrinsics.fx), fy=\(intrinsics.fy)")
         } else {
-            print("⚠️  No camera intrinsics found in CSV")
+            print("⚠️ No camera intrinsics found in CSV")
         }
         
         // Skip header and comment lines
         for line in lines {
-            if line.hasPrefix("#") || line.contains("x,y,depth") { continue }
+            if line.hasPrefix("#") || line.contains("x,y,depth") || line.trimmingCharacters(in: .whitespaces).isEmpty {
+                continue
+            }
             
             let components = line.components(separatedBy: ",")
-            guard components.count >= 4,
-                  let x = Float(components[0]),
-                  let y = Float(components[1]),
-                  let depth = Float(components[2]) else { continue }
             
-            // Skip invalid depth values
-            if depth.isNaN || depth.isInfinite || depth <= 0 { continue }
-            
-            points.append(DepthPoint(x: x, y: y, depth: depth))
+            // Handle both old format (4 columns: x,y,depth_meters,depth_geometry) and new format (3 columns: x,y,depth_meters)
+            if components.count >= 3 {
+                guard let x = Float(components[0]),
+                      let y = Float(components[1]),
+                      let depth = Float(components[2]) else { continue }
+                
+                // Skip invalid depth values
+                if depth.isNaN || depth.isInfinite || depth <= 0 { continue }
+                
+                points.append(DepthPoint(x: x, y: y, depth: depth))
+            }
         }
         
+        print("📊 Parsed \(points.count) valid depth points from CSV")
         return points
     }
     
