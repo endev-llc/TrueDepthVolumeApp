@@ -915,15 +915,41 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         }
         
         let depthMap = processedDepthData.depthDataMap
-
         CVPixelBufferLockBaseAddress(depthMap, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(depthMap, .readOnly) }
 
         let width = CVPixelBufferGetWidth(depthMap)
         let height = CVPixelBufferGetHeight(depthMap)
+        
+        // DIAGNOSTIC PRINTS FOR RESOLUTION ANALYSIS
+        print("=== DEPTH DATA DIAGNOSTICS ===")
+        print("Actual depth data dimensions: \(width) x \(height)")
+        print("Actual depth data aspect ratio: \(Float(width) / Float(height))")
+        
+        if let calibrationData = self.cameraCalibrationData {
+            let dimensions = calibrationData.intrinsicMatrixReferenceDimensions
+            print("Camera intrinsics reference dimensions: \(dimensions.width) x \(dimensions.height)")
+            print("Intrinsics aspect ratio: \(dimensions.width / dimensions.height)")
+            
+            // Calculate what the scaling factors would be
+            let scaleX = Float(width) / Float(dimensions.width)
+            let scaleY = Float(height) / Float(dimensions.height)
+            print("Actual scaling factors needed: scaleX=\(scaleX), scaleY=\(scaleY)")
+            print("Are scaling factors equal? \(abs(scaleX - scaleY) < 0.001)")
+            
+            // Show the hardcoded scaling factors used in 3D conversion
+            let hardcodedScaleX: Float = 640.0 / 4032.0
+            let hardcodedScaleY: Float = 360.0 / 2268.0
+            print("Hardcoded scaling factors in 3D code: scaleX=\(hardcodedScaleX), scaleY=\(hardcodedScaleY)")
+            print("Do hardcoded factors match actual? X: \(abs(scaleX - hardcodedScaleX) < 0.001), Y: \(abs(scaleY - hardcodedScaleY) < 0.001)")
+        } else {
+            print("No camera calibration data available")
+        }
+        
         let floatBuffer = CVPixelBufferGetBaseAddress(depthMap)!.bindMemory(to: Float32.self, capacity: width * height)
         let bytesPerRow = CVPixelBufferGetBytesPerRow(depthMap)
 
+        // Rest of your existing code...
         let timestamp = Int(Date().timeIntervalSince1970)
         let fileName = cropPath != nil ? "depth_data_cropped_\(timestamp).csv" : "depth_data_\(timestamp).csv"
         
@@ -961,21 +987,18 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
             for y in 0..<height {
                 for x in 0..<width {
                     let pixelIndex = y * (bytesPerRow / MemoryLayout<Float32>.stride) + x
-                    let depthValue = floatBuffer[pixelIndex] // This is now always true depth in meters
+                    let depthValue = floatBuffer[pixelIndex]
                     
                     // Check if cropping is enabled and if point is within the crop path
                     var shouldInclude = true
                     if let cropPath = cropPath, !cropPath.isEmpty {
-                        // Convert depth coordinates to rotated display coordinates to match the drawn path
-                        // The depth visualization applies: rotatedX = originalHeight - 1 - y, rotatedY = x
-                        let displayX = CGFloat(height - 1 - y)  // Matches the rotation in createDepthVisualization
+                        let displayX = CGFloat(height - 1 - y)
                         let displayY = CGFloat(x)
                         let point = CGPoint(x: displayX, y: displayY)
                         shouldInclude = isPointInPolygon(point: point, polygon: cropPath)
                     }
                     
                     if shouldInclude {
-                        // Save the true depth value (already converted from disparity if needed)
                         csvContent += "\(x),\(y),\(String(format: "%.6f", depthValue))\n"
                         croppedPixelCount += 1
                         
@@ -988,10 +1011,16 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
                 }
             }
             
-            try csvContent.write(to: fileURL, atomically: true, encoding: .utf8)
-            
             let validMinDepth = minDepth == Float.infinity ? 0 : minDepth
             let validMaxDepth = maxDepth == -Float.infinity ? 0 : maxDepth
+            
+            // ADDITIONAL DIAGNOSTIC PRINTS FOR DEPTH VALUES
+            print("Depth value range: \(validMinDepth)m to \(validMaxDepth)m")
+            print("Depth range span: \(validMaxDepth - validMinDepth)m")
+            print("Valid pixels: \(validPixelCount)/\(width * height)")
+            print("================================")
+            
+            try csvContent.write(to: fileURL, atomically: true, encoding: .utf8)
             
             DispatchQueue.main.async {
                 self.lastSavedFileName = fileName
@@ -1011,7 +1040,6 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
                 }
                 print("Depth range: \(String(format: "%.6f", validMinDepth))m - \(String(format: "%.6f", validMaxDepth))m")
                 
-                // Log conversion information
                 let originalType = depthData.depthDataType
                 if originalType == kCVPixelFormatType_DisparityFloat16 || originalType == kCVPixelFormatType_DisparityFloat32 {
                     print("Converted from disparity to true depth values using Apple's calibrated conversion")
@@ -1392,33 +1420,69 @@ struct DepthVisualization3DView: View {
         var measurementPoints3D: [SCNVector3] = []
         
         guard let intrinsics = cameraIntrinsics else {
-            print("⚠️ No camera intrinsics available")
+            print("No camera intrinsics available")
             return []
         }
         
-        print("🔧 APPLYING RESOLUTION SCALING CORRECTIONS")
+        print("=== 3D CONVERSION DIAGNOSTICS ===")
+        print("Camera intrinsics from CSV:")
+        print("  fx=\(intrinsics.fx), fy=\(intrinsics.fy)")
+        print("  cx=\(intrinsics.cx), cy=\(intrinsics.cy)")
+        print("  Reference dimensions: \(intrinsics.width) x \(intrinsics.height)")
         
         // CORRECTION: Scale intrinsics from 4032x2268 to 640x360 resolution
         let resolutionScaleX: Float = 640.0 / 4032.0   // = 0.1587
         let resolutionScaleY: Float = 360.0 / 2268.0   // = 0.1587
+        
+        print("Hardcoded scaling assumptions:")
+        print("  From 4032x2268 to 640x360")
+        print("  ScaleX: \(resolutionScaleX), ScaleY: \(resolutionScaleY)")
+        
+        // Check if the CSV reference dimensions match our hardcoded assumptions
+        let expectedOriginalWidth: Float = 4032.0
+        let expectedOriginalHeight: Float = 2268.0
+        let expectedScaledWidth: Float = 640.0
+        let expectedScaledHeight: Float = 360.0
+        
+        print("Assumption validation:")
+        print("  CSV ref width matches 4032? \(abs(intrinsics.width - expectedOriginalWidth) < 1.0)")
+        print("  CSV ref height matches 2268? \(abs(intrinsics.height - expectedOriginalHeight) < 1.0)")
         
         let correctedFx = intrinsics.fx * resolutionScaleX
         let correctedFy = intrinsics.fy * resolutionScaleY
         let correctedCx = intrinsics.cx * resolutionScaleX
         let correctedCy = intrinsics.cy * resolutionScaleY
         
-        print("📐 Resolution-Corrected Intrinsics:")
-        print("  Original (4032x2268): fx=\(intrinsics.fx), fy=\(intrinsics.fy)")
-        print("  Corrected (640x360): fx=\(correctedFx), fy=\(correctedFy)")
+        print("Resolution-Corrected Intrinsics:")
+        print("  Original: fx=\(intrinsics.fx), fy=\(intrinsics.fy)")
+        print("  Corrected: fx=\(correctedFx), fy=\(correctedFy)")
         print("  Scale factors: \(resolutionScaleX)x")
         
-        for point in points {
-            // Coordinates are already at 640x360 resolution - use directly
+        // Sample a few points to show the conversion process
+        print("Sample point conversions (first 3 points):")
+        
+        for (index, point) in points.enumerated() {
+            if index >= 3 { break }
+            
             let pixelX = point.x
             let pixelY = point.y
             let depthInMeters = point.depth
             
-            // Unproject using resolution-corrected intrinsics
+            let realWorldX = (pixelX - correctedCx) * depthInMeters / correctedFx
+            let realWorldY = (pixelY - correctedCy) * depthInMeters / correctedFy
+            let realWorldZ = depthInMeters
+            
+            print("  Point \(index): pixel(\(pixelX), \(pixelY)) depth=\(depthInMeters)m -> world(\(realWorldX), \(realWorldY), \(realWorldZ))")
+            
+            measurementPoints3D.append(SCNVector3(realWorldX, realWorldY, realWorldZ))
+        }
+        
+        // Process remaining points
+        for point in points.dropFirst(3) {
+            let pixelX = point.x
+            let pixelY = point.y
+            let depthInMeters = point.depth
+            
             let realWorldX = (pixelX - correctedCx) * depthInMeters / correctedFx
             let realWorldY = (pixelY - correctedCy) * depthInMeters / correctedFy
             let realWorldZ = depthInMeters
@@ -1428,6 +1492,11 @@ struct DepthVisualization3DView: View {
         
         // Center the point cloud
         let bbox = calculateBoundingBox(measurementPoints3D)
+        print("Bounding box BEFORE centering:")
+        print("  Min: (\(bbox.min.x), \(bbox.min.y), \(bbox.min.z))")
+        print("  Max: (\(bbox.max.x), \(bbox.max.y), \(bbox.max.z))")
+        print("  Size: (\((bbox.max.x - bbox.min.x) * 100)cm, \((bbox.max.y - bbox.min.y) * 100)cm, \((bbox.max.z - bbox.min.z) * 100)cm)")
+        
         let center = SCNVector3(
             (bbox.min.x + bbox.max.x) / 2.0,
             (bbox.min.y + bbox.max.y) / 2.0,
@@ -1442,15 +1511,17 @@ struct DepthVisualization3DView: View {
             )
         }
         
-        let finalWidth = (bbox.max.x - bbox.min.x) * 100
-        let finalHeight = (bbox.max.y - bbox.min.y) * 100
-        let finalDepth = (bbox.max.z - bbox.min.z) * 100
+        let finalBbox = calculateBoundingBox(measurementPoints3D)
+        let finalWidth = (finalBbox.max.x - finalBbox.min.x) * 100
+        let finalHeight = (finalBbox.max.y - finalBbox.min.y) * 100
+        let finalDepth = (finalBbox.max.z - finalBbox.min.z) * 100
         
-        print("📏 CORRECTED DIMENSIONS:")
-        print("  Width: \(finalWidth)cm (target: ~4cm)")
-        print("  Height: \(finalHeight)cm (target: ~4cm)")
-        print("  Depth: \(finalDepth)cm (target: ~3cm)")
-        print("  Scaling errors: W=\(finalWidth/4.0)x, H=\(finalHeight/4.0)x, D=\(finalDepth/3.0)x")
+        print("FINAL DIMENSIONS (after centering):")
+        print("  Width: \(finalWidth)cm")
+        print("  Height: \(finalHeight)cm")
+        print("  Depth: \(finalDepth)cm")
+        print("  Aspect ratios: W/H=\(finalWidth/finalHeight), W/D=\(finalWidth/finalDepth), H/D=\(finalHeight/finalDepth)")
+        print("==================================")
         
         return measurementPoints3D
     }
