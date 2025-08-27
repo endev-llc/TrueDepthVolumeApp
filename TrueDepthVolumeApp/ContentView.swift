@@ -1685,7 +1685,8 @@ struct DepthVisualization3DView: View {
             
             // Color based on measurement depth (Z coordinate)
             let normalizedDepth = (centerZ - min.z) / (max.z - min.z)
-            let voxelColor = depthToColor(normalizedDepth)
+            let invertedDepth = 1.0 - normalizedDepth  // Invert: closer = high value, farther = low value
+            let voxelColor = depthToColor(invertedDepth)  // Pass inverted depth
             
             for _ in 0..<8 {
                 voxelColors.append(voxelColor)
@@ -1824,11 +1825,12 @@ struct DepthVisualization3DView: View {
         // Create colors based on Z coordinate (depth) in measurement space
         let bbox = calculateBoundingBox(measurementPoints3D)
         let depthRange = bbox.max.z - bbox.min.z
-        
+
         var colors: [SCNVector3] = []
         for point in measurementPoints3D {
             let normalizedDepth = depthRange > 0 ? (point.z - bbox.min.z) / depthRange : 0
-            let color = depthToColor(normalizedDepth)
+            let invertedDepth = 1.0 - normalizedDepth  // Invert: closer = high value, farther = low value
+            let color = depthToColor(invertedDepth)  // Pass inverted depth
             colors.append(color)
         }
         
