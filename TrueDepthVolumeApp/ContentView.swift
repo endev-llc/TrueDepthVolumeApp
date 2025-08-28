@@ -914,12 +914,11 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         let depthMap = processedDepthData.depthDataMap
         CVPixelBufferLockBaseAddress(depthMap, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(depthMap, .readOnly) }
-
+        
         let width = CVPixelBufferGetWidth(depthMap)
         let height = CVPixelBufferGetHeight(depthMap)
         let floatBuffer = CVPixelBufferGetBaseAddress(depthMap)!.bindMemory(to: Float32.self, capacity: width * height)
         let bytesPerRow = CVPixelBufferGetBytesPerRow(depthMap)
-
         let timestamp = Int(Date().timeIntervalSince1970)
         let fileName = cropPath != nil ? "depth_data_cropped_\(timestamp).csv" : "depth_data_\(timestamp).csv"
         
@@ -931,12 +930,9 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         let fileURL = documentsDirectory.appendingPathComponent(fileName)
         
         do {
-            let startTime = CFAbsoluteTimeGetCurrent()
-            
             var csvLines: [String] = []
             csvLines.append("x,y,depth_meters")
             
-            // Add metadata
             if let calibrationData = self.cameraCalibrationData {
                 let intrinsics = calibrationData.intrinsicMatrix
                 csvLines.append("# Camera Intrinsics: fx=\(intrinsics.columns.0.x), fy=\(intrinsics.columns.1.y), cx=\(intrinsics.columns.2.x), cy=\(intrinsics.columns.2.y)")
@@ -956,33 +952,20 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
             var validPixelCount = 0
             var croppedPixelCount = 0
             
-            // THE KEY OPTIMIZATION: Pre-compute bounding box and use scan-line algorithm
             var boundingBox: (minX: Int, minY: Int, maxX: Int, maxY: Int)?
             var simplifiedPath: [CGPoint] = []
             
             if let cropPath = cropPath {
-                print("Optimizing polygon with \(cropPath.count) vertices...")
-                let optStart = CFAbsoluteTimeGetCurrent()
-                
-                // Simplify polygon to reduce complexity
                 simplifiedPath = douglasPeuckerSimplify(cropPath, epsilon: 1.0)
                 
-                // Calculate bounding box in display coordinates
                 let minX = Int(floor(simplifiedPath.map { $0.x }.min()!))
                 let maxX = Int(ceil(simplifiedPath.map { $0.x }.max()!))
                 let minY = Int(floor(simplifiedPath.map { $0.y }.min()!))
                 let maxY = Int(ceil(simplifiedPath.map { $0.y }.max()!))
                 
                 boundingBox = (minX: minX, minY: minY, maxX: maxX, maxY: maxY)
-                
-                let optTime = CFAbsoluteTimeGetCurrent() - optStart
-                print("Polygon simplified from \(cropPath.count) to \(simplifiedPath.count) vertices in \(String(format: "%.3f", optTime))s")
-                print("Bounding box: (\(minX),\(minY)) to (\(maxX),\(maxY))")
             }
             
-            let processingStart = CFAbsoluteTimeGetCurrent()
-            
-            // Process pixels with massive optimization
             for y in 0..<height {
                 for x in 0..<width {
                     let pixelIndex = y * (bytesPerRow / MemoryLayout<Float32>.stride) + x
@@ -991,16 +974,13 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
                     var shouldInclude = true
                     
                     if let bbox = boundingBox {
-                        // Apply coordinate transformation for display coordinates
-                        let displayX = height - 1 - y  // Convert to Int directly
+                        let displayX = height - 1 - y
                         let displayY = x
                         
-                        // Quick bounding box rejection test (90%+ of pixels rejected here)
                         if displayX < bbox.minX || displayX > bbox.maxX ||
                            displayY < bbox.minY || displayY > bbox.maxY {
                             shouldInclude = false
                         } else {
-                            // Only do expensive polygon test for pixels inside bounding box
                             let point = CGPoint(x: CGFloat(displayX), y: CGFloat(displayY))
                             shouldInclude = fastPointInPolygon(point: point, polygon: simplifiedPath)
                         }
@@ -1019,16 +999,8 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
                 }
             }
             
-            let processingTime = CFAbsoluteTimeGetCurrent() - processingStart
-            print("Processed \(width*height) pixels in \(String(format: "%.3f", processingTime))s")
-            print("Included \(croppedPixelCount) pixels")
-            
-            // Write file
             let csvContent = csvLines.joined(separator: "\n")
             try csvContent.write(to: fileURL, atomically: true, encoding: .utf8)
-            
-            let totalTime = CFAbsoluteTimeGetCurrent() - startTime
-            print("TOTAL TIME: \(String(format: "%.3f", totalTime))s")
             
             DispatchQueue.main.async {
                 self.lastSavedFileName = fileName
