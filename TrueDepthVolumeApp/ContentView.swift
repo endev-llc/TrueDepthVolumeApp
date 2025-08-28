@@ -892,12 +892,10 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
 
     // MARK: - Enhanced CSV Save Function with Cropping
     private func saveDepthDataToFile(depthData: AVDepthData, cropPath: [CGPoint]? = nil) {
-        // Always convert to depth data using Apple's calibrated conversion
         let processedDepthData: AVDepthData
         
         if depthData.depthDataType == kCVPixelFormatType_DisparityFloat16 ||
            depthData.depthDataType == kCVPixelFormatType_DisparityFloat32 {
-            // Convert disparity to true depth values using Apple's calibrated conversion
             do {
                 processedDepthData = try depthData.converting(toDepthDataType: kCVPixelFormatType_DepthFloat32)
             } catch {
@@ -905,7 +903,6 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
                 return
             }
         } else {
-            // Already depth data, ensure it's Float32 format
             do {
                 processedDepthData = try depthData.converting(toDepthDataType: kCVPixelFormatType_DepthFloat32)
             } catch {
@@ -920,36 +917,9 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
 
         let width = CVPixelBufferGetWidth(depthMap)
         let height = CVPixelBufferGetHeight(depthMap)
-        
-        // DIAGNOSTIC PRINTS FOR RESOLUTION ANALYSIS
-        print("=== DEPTH DATA DIAGNOSTICS ===")
-        print("Actual depth data dimensions: \(width) x \(height)")
-        print("Actual depth data aspect ratio: \(Float(width) / Float(height))")
-        
-        if let calibrationData = self.cameraCalibrationData {
-            let dimensions = calibrationData.intrinsicMatrixReferenceDimensions
-            print("Camera intrinsics reference dimensions: \(dimensions.width) x \(dimensions.height)")
-            print("Intrinsics aspect ratio: \(dimensions.width / dimensions.height)")
-            
-            // Calculate what the scaling factors would be
-            let scaleX = Float(width) / Float(dimensions.width)
-            let scaleY = Float(height) / Float(dimensions.height)
-            print("Actual scaling factors needed: scaleX=\(scaleX), scaleY=\(scaleY)")
-            print("Are scaling factors equal? \(abs(scaleX - scaleY) < 0.001)")
-            
-            // Show the hardcoded scaling factors used in 3D conversion
-            let hardcodedScaleX: Float = 640.0 / 4032.0
-            let hardcodedScaleY: Float = 360.0 / 2268.0
-            print("Hardcoded scaling factors in 3D code: scaleX=\(hardcodedScaleX), scaleY=\(hardcodedScaleY)")
-            print("Do hardcoded factors match actual? X: \(abs(scaleX - hardcodedScaleX) < 0.001), Y: \(abs(scaleY - hardcodedScaleY) < 0.001)")
-        } else {
-            print("No camera calibration data available")
-        }
-        
         let floatBuffer = CVPixelBufferGetBaseAddress(depthMap)!.bindMemory(to: Float32.self, capacity: width * height)
         let bytesPerRow = CVPixelBufferGetBytesPerRow(depthMap)
 
-        // Rest of your existing code...
         let timestamp = Int(Date().timeIntervalSince1970)
         let fileName = cropPath != nil ? "depth_data_cropped_\(timestamp).csv" : "depth_data_\(timestamp).csv"
         
@@ -961,22 +931,24 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         let fileURL = documentsDirectory.appendingPathComponent(fileName)
         
         do {
-            var csvContent = "x,y,depth_meters\n"
+            let startTime = CFAbsoluteTimeGetCurrent()
             
-            // Add camera calibration data as comments (if available)
+            var csvLines: [String] = []
+            csvLines.append("x,y,depth_meters")
+            
+            // Add metadata
             if let calibrationData = self.cameraCalibrationData {
                 let intrinsics = calibrationData.intrinsicMatrix
-                csvContent += "# Camera Intrinsics: fx=\(intrinsics.columns.0.x), fy=\(intrinsics.columns.1.y), cx=\(intrinsics.columns.2.x), cy=\(intrinsics.columns.2.y)\n"
+                csvLines.append("# Camera Intrinsics: fx=\(intrinsics.columns.0.x), fy=\(intrinsics.columns.1.y), cx=\(intrinsics.columns.2.x), cy=\(intrinsics.columns.2.y)")
                 let dimensions = calibrationData.intrinsicMatrixReferenceDimensions
-                csvContent += "# Reference Dimensions: width=\(dimensions.width), height=\(dimensions.height)\n"
+                csvLines.append("# Reference Dimensions: width=\(dimensions.width), height=\(dimensions.height)")
             }
             
-            // Add data source information
             let originalDataType = depthData.depthDataType
             if originalDataType == kCVPixelFormatType_DisparityFloat16 || originalDataType == kCVPixelFormatType_DisparityFloat32 {
-                csvContent += "# Original Data: Disparity (converted to depth using Apple's calibrated conversion)\n"
+                csvLines.append("# Original Data: Disparity (converted to depth using Apple's calibrated conversion)")
             } else {
-                csvContent += "# Original Data: Depth\n"
+                csvLines.append("# Original Data: Depth")
             }
             
             var minDepth: Float = Float.infinity
@@ -984,22 +956,58 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
             var validPixelCount = 0
             var croppedPixelCount = 0
             
+            // THE KEY OPTIMIZATION: Pre-compute bounding box and use scan-line algorithm
+            var boundingBox: (minX: Int, minY: Int, maxX: Int, maxY: Int)?
+            var simplifiedPath: [CGPoint] = []
+            
+            if let cropPath = cropPath {
+                print("Optimizing polygon with \(cropPath.count) vertices...")
+                let optStart = CFAbsoluteTimeGetCurrent()
+                
+                // Simplify polygon to reduce complexity
+                simplifiedPath = douglasPeuckerSimplify(cropPath, epsilon: 1.0)
+                
+                // Calculate bounding box in display coordinates
+                let minX = Int(floor(simplifiedPath.map { $0.x }.min()!))
+                let maxX = Int(ceil(simplifiedPath.map { $0.x }.max()!))
+                let minY = Int(floor(simplifiedPath.map { $0.y }.min()!))
+                let maxY = Int(ceil(simplifiedPath.map { $0.y }.max()!))
+                
+                boundingBox = (minX: minX, minY: minY, maxX: maxX, maxY: maxY)
+                
+                let optTime = CFAbsoluteTimeGetCurrent() - optStart
+                print("Polygon simplified from \(cropPath.count) to \(simplifiedPath.count) vertices in \(String(format: "%.3f", optTime))s")
+                print("Bounding box: (\(minX),\(minY)) to (\(maxX),\(maxY))")
+            }
+            
+            let processingStart = CFAbsoluteTimeGetCurrent()
+            
+            // Process pixels with massive optimization
             for y in 0..<height {
                 for x in 0..<width {
                     let pixelIndex = y * (bytesPerRow / MemoryLayout<Float32>.stride) + x
                     let depthValue = floatBuffer[pixelIndex]
                     
-                    // Check if cropping is enabled and if point is within the crop path
                     var shouldInclude = true
-                    if let cropPath = cropPath, !cropPath.isEmpty {
-                        let displayX = CGFloat(height - 1 - y)
-                        let displayY = CGFloat(x)
-                        let point = CGPoint(x: displayX, y: displayY)
-                        shouldInclude = isPointInPolygon(point: point, polygon: cropPath)
+                    
+                    if let bbox = boundingBox {
+                        // Apply coordinate transformation for display coordinates
+                        let displayX = height - 1 - y  // Convert to Int directly
+                        let displayY = x
+                        
+                        // Quick bounding box rejection test (90%+ of pixels rejected here)
+                        if displayX < bbox.minX || displayX > bbox.maxX ||
+                           displayY < bbox.minY || displayY > bbox.maxY {
+                            shouldInclude = false
+                        } else {
+                            // Only do expensive polygon test for pixels inside bounding box
+                            let point = CGPoint(x: CGFloat(displayX), y: CGFloat(displayY))
+                            shouldInclude = fastPointInPolygon(point: point, polygon: simplifiedPath)
+                        }
                     }
                     
                     if shouldInclude {
-                        csvContent += "\(x),\(y),\(String(format: "%.6f", depthValue))\n"
+                        csvLines.append("\(x),\(y),\(String(format: "%.6f", depthValue))")
                         croppedPixelCount += 1
                         
                         if !depthValue.isNaN && !depthValue.isInfinite && depthValue > 0 {
@@ -1011,46 +1019,114 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
                 }
             }
             
-            let validMinDepth = minDepth == Float.infinity ? 0 : minDepth
-            let validMaxDepth = maxDepth == -Float.infinity ? 0 : maxDepth
+            let processingTime = CFAbsoluteTimeGetCurrent() - processingStart
+            print("Processed \(width*height) pixels in \(String(format: "%.3f", processingTime))s")
+            print("Included \(croppedPixelCount) pixels")
             
-            // ADDITIONAL DIAGNOSTIC PRINTS FOR DEPTH VALUES
-            print("Depth value range: \(validMinDepth)m to \(validMaxDepth)m")
-            print("Depth range span: \(validMaxDepth - validMinDepth)m")
-            print("Valid pixels: \(validPixelCount)/\(width * height)")
-            print("================================")
-            
+            // Write file
+            let csvContent = csvLines.joined(separator: "\n")
             try csvContent.write(to: fileURL, atomically: true, encoding: .utf8)
+            
+            let totalTime = CFAbsoluteTimeGetCurrent() - startTime
+            print("TOTAL TIME: \(String(format: "%.3f", totalTime))s")
             
             DispatchQueue.main.async {
                 self.lastSavedFileName = fileName
-                
                 if cropPath != nil {
                     self.croppedFileToShare = fileURL
                 } else {
                     self.fileToShare = fileURL
-                }
-                
-                print("Depth data saved successfully!")
-                print("File location: \(fileURL.path)")
-                print("Dimensions: \(width) x \(height)")
-                print("Valid pixels: \(validPixelCount)/\(width * height)")
-                if cropPath != nil {
-                    print("Cropped pixels: \(croppedPixelCount)/\(width * height)")
-                }
-                print("Depth range: \(String(format: "%.6f", validMinDepth))m - \(String(format: "%.6f", validMaxDepth))m")
-                
-                let originalType = depthData.depthDataType
-                if originalType == kCVPixelFormatType_DisparityFloat16 || originalType == kCVPixelFormatType_DisparityFloat32 {
-                    print("Converted from disparity to true depth values using Apple's calibrated conversion")
-                } else {
-                    print("Original data was already in depth format")
                 }
             }
             
         } catch {
             self.presentError("Failed to save depth data: \(error.localizedDescription)")
         }
+    }
+
+    // Optimized point-in-polygon using winding number algorithm
+    private func fastPointInPolygon(point: CGPoint, polygon: [CGPoint]) -> Bool {
+        guard polygon.count > 2 else { return false }
+        
+        let x = point.x
+        let y = point.y
+        var windingNumber = 0
+        
+        for i in 0..<polygon.count {
+            let j = (i + 1) % polygon.count
+            
+            let xi = polygon[i].x
+            let yi = polygon[i].y
+            let xj = polygon[j].x
+            let yj = polygon[j].y
+            
+            if yi <= y {
+                if yj > y {  // upward crossing
+                    let cross = (xj - xi) * (y - yi) - (x - xi) * (yj - yi)
+                    if cross > 0 {
+                        windingNumber += 1
+                    }
+                }
+            } else {
+                if yj <= y { // downward crossing
+                    let cross = (xj - xi) * (y - yi) - (x - xi) * (yj - yi)
+                    if cross < 0 {
+                        windingNumber -= 1
+                    }
+                }
+            }
+        }
+        
+        return windingNumber != 0
+    }
+
+    // Douglas-Peucker algorithm for polygon simplification
+    private func douglasPeuckerSimplify(_ points: [CGPoint], epsilon: CGFloat) -> [CGPoint] {
+        guard points.count > 2 else { return points }
+        
+        // Find the point with maximum distance from line between first and last points
+        var maxDistance: CGFloat = 0
+        var maxIndex = 0
+        
+        let firstPoint = points.first!
+        let lastPoint = points.last!
+        
+        for i in 1..<(points.count - 1) {
+            let distance = perpendicularDistance(points[i], lineStart: firstPoint, lineEnd: lastPoint)
+            if distance > maxDistance {
+                maxDistance = distance
+                maxIndex = i
+            }
+        }
+        
+        // If max distance is greater than epsilon, recursively simplify
+        if maxDistance > epsilon {
+            let leftSegment = douglasPeuckerSimplify(Array(points[0...maxIndex]), epsilon: epsilon)
+            let rightSegment = douglasPeuckerSimplify(Array(points[maxIndex..<points.count]), epsilon: epsilon)
+            
+            // Combine results (remove duplicate middle point)
+            return leftSegment + Array(rightSegment.dropFirst())
+        } else {
+            // Return just the endpoints
+            return [firstPoint, lastPoint]
+        }
+    }
+
+    private func perpendicularDistance(_ point: CGPoint, lineStart: CGPoint, lineEnd: CGPoint) -> CGFloat {
+        let dx = lineEnd.x - lineStart.x
+        let dy = lineEnd.y - lineStart.y
+        
+        if dx == 0 && dy == 0 {
+            // Line segment is a point
+            let px = point.x - lineStart.x
+            let py = point.y - lineStart.y
+            return sqrt(px * px + py * py)
+        }
+        
+        let numerator = abs(dy * point.x - dx * point.y + lineEnd.x * lineStart.y - lineEnd.y * lineStart.x)
+        let denominator = sqrt(dx * dx + dy * dy)
+        
+        return numerator / denominator
     }
 }
 
