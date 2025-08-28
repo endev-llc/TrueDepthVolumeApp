@@ -182,6 +182,7 @@ struct OverlayView: View {
     let photo: UIImage
     let cameraManager: CameraManager
     let onDismiss: () -> Void
+    @State private var drawingId = UUID()
     
     @State private var photoOpacity: Double = 0.7
     @State private var showingDepthOnly = false
@@ -189,7 +190,6 @@ struct OverlayView: View {
     @State private var drawnPath: [CGPoint] = []
     @State private var isDrawing = false
     @State private var imageFrame: CGRect = .zero
-    @State private var showingConfirmation = false
     
     var body: some View {
         ZStack {
@@ -222,6 +222,8 @@ struct OverlayView: View {
                     } else {
                         Button("Clear") {
                             drawnPath = []
+                            isDrawing = false
+                            drawingId = UUID() // Force DrawingOverlay to recreate
                         }
                         .foregroundColor(.red)
                         .padding()
@@ -235,7 +237,8 @@ struct OverlayView: View {
                         
                         if drawnPath.count > 10 {
                             Button("Confirm") {
-                                showingConfirmation = true
+                                cropCSVWithOutline()
+                                isDrawingMode = false
                             }
                             .foregroundColor(.green)
                             .padding()
@@ -303,8 +306,9 @@ struct OverlayView: View {
                             frameSize: geometry.size,
                             imageFrame: imageFrame
                         )
-                        .allowsHitTesting(isDrawingMode) // Only allow interaction when in drawing mode
-                        .opacity(isDrawingMode ? 1.0 : 0.0) // Make invisible when not drawing
+                        .id(drawingId) // Add this line
+                        .allowsHitTesting(isDrawingMode)
+                        .opacity(isDrawingMode ? 1.0 : 0.0)
                         
                         // Show completed outline
                         if !isDrawingMode && !drawnPath.isEmpty {
@@ -333,15 +337,6 @@ struct OverlayView: View {
                     .multilineTextAlignment(.center)
                     .padding()
             }
-        }
-        .alert("Confirm Outline", isPresented: $showingConfirmation) {
-            Button("Cancel", role: .cancel) { }
-            Button("Crop CSV") {
-                cropCSVWithOutline()
-                isDrawingMode = false
-            }
-        } message: {
-            Text("This will crop the depth data to only include points within your outline. Continue?")
         }
     }
     
