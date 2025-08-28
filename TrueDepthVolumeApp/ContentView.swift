@@ -296,15 +296,15 @@ struct OverlayView: View {
                                 .opacity(photoOpacity)
                         }
                         
-                        // Drawing overlay
-                        if isDrawingMode {
-                            DrawingOverlay(
-                                path: $drawnPath,
-                                isDrawing: $isDrawing,
-                                frameSize: geometry.size,
-                                imageFrame: imageFrame
-                            )
-                        }
+                        // Always include DrawingOverlay to maintain consistent positioning
+                        DrawingOverlay(
+                            path: $drawnPath,
+                            isDrawing: $isDrawing,
+                            frameSize: geometry.size,
+                            imageFrame: imageFrame
+                        )
+                        .allowsHitTesting(isDrawingMode) // Only allow interaction when in drawing mode
+                        .opacity(isDrawingMode ? 1.0 : 0.0) // Make invisible when not drawing
                         
                         // Show completed outline
                         if !isDrawingMode && !drawnPath.isEmpty {
