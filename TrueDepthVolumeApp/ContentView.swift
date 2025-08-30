@@ -1311,17 +1311,52 @@ struct DepthVisualization3DView: View {
     }
     
     private func loadAndCreate3DScene() {
+        let startTime = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Starting loadAndCreate3DScene()")
+        
         DispatchQueue.global(qos: .userInitiated).async {
             do {
+                let csvLoadStart = CFAbsoluteTimeGetCurrent()
+                print("🕐 [TIMING] Starting CSV file loading...")
+                
                 let csvContent = try String(contentsOf: csvFileURL)
+                
+                let csvLoadEnd = CFAbsoluteTimeGetCurrent()
+                print("🕐 [TIMING] CSV file loading completed in \(String(format: "%.3f", csvLoadEnd - csvLoadStart))s")
+                
+                let parseStart = CFAbsoluteTimeGetCurrent()
+                print("🕐 [TIMING] Starting CSV parsing...")
+                
                 let depthPoints = parseCSVContent(csvContent)
+                
+                let parseEnd = CFAbsoluteTimeGetCurrent()
+                print("🕐 [TIMING] CSV parsing completed in \(String(format: "%.3f", parseEnd - parseStart))s")
+                
+                let sceneStart = CFAbsoluteTimeGetCurrent()
+                print("🕐 [TIMING] Starting 3D scene creation...")
+                
                 let scene = create3DScene(from: depthPoints)
                 
+                let sceneEnd = CFAbsoluteTimeGetCurrent()
+                print("🕐 [TIMING] 3D scene creation completed in \(String(format: "%.3f", sceneEnd - sceneStart))s")
+                
+                let totalTime = CFAbsoluteTimeGetCurrent() - startTime
+                print("🕐 [TIMING] TOTAL loadAndCreate3DScene() completed in \(String(format: "%.3f", totalTime))s")
+                
                 DispatchQueue.main.async {
+                    let uiUpdateStart = CFAbsoluteTimeGetCurrent()
+                    print("🕐 [TIMING] Starting UI update...")
+                    
                     self.scene = scene
                     self.isLoading = false
+                    
+                    let uiUpdateEnd = CFAbsoluteTimeGetCurrent()
+                    print("🕐 [TIMING] UI update completed in \(String(format: "%.3f", uiUpdateEnd - uiUpdateStart))s")
                 }
             } catch {
+                let errorTime = CFAbsoluteTimeGetCurrent() - startTime
+                print("🕐 [TIMING] Error occurred after \(String(format: "%.3f", errorTime))s")
+                
                 DispatchQueue.main.async {
                     self.errorMessage = "Failed to load CSV file: \(error.localizedDescription)"
                     self.isLoading = false
@@ -1331,9 +1366,17 @@ struct DepthVisualization3DView: View {
     }
     
     private func parseCSVContent(_ content: String) -> [DepthPoint] {
-        var points: [DepthPoint] = []
-        let lines = content.components(separatedBy: .newlines)
+        let startTime = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] parseCSVContent() started")
         
+        var points: [DepthPoint] = []
+        
+        let linesStart = CFAbsoluteTimeGetCurrent()
+        let lines = content.components(separatedBy: .newlines)
+        let linesEnd = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Lines splitting completed in \(String(format: "%.3f", linesEnd - linesStart))s - \(lines.count) lines")
+        
+        let intrinsicsStart = CFAbsoluteTimeGetCurrent()
         // Parse camera intrinsics from comments (if available)
         for line in lines {
             if line.hasPrefix("# Camera Intrinsics:") {
@@ -1341,12 +1384,17 @@ struct DepthVisualization3DView: View {
                 break
             }
         }
+        let intrinsicsEnd = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Camera intrinsics parsing completed in \(String(format: "%.3f", intrinsicsEnd - intrinsicsStart))s")
         
         if let intrinsics = cameraIntrinsics {
             print("🎯 Loaded camera intrinsics from CSV: fx=\(intrinsics.fx), fy=\(intrinsics.fy)")
         } else {
             print("⚠️ No camera intrinsics found in CSV")
         }
+        
+        let pointsParsingStart = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Starting points parsing...")
         
         // Skip header and comment lines
         for line in lines {
@@ -1369,11 +1417,20 @@ struct DepthVisualization3DView: View {
             }
         }
         
+        let pointsParsingEnd = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Points parsing completed in \(String(format: "%.3f", pointsParsingEnd - pointsParsingStart))s")
+        
+        let totalTime = CFAbsoluteTimeGetCurrent() - startTime
+        print("🕐 [TIMING] parseCSVContent() completed in \(String(format: "%.3f", totalTime))s")
         print("📊 Parsed \(points.count) valid depth points from CSV")
+        
         return points
     }
     
     private func parseCameraIntrinsics(from lines: [String]) -> CameraIntrinsics? {
+        let startTime = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] parseCameraIntrinsics() started")
+        
         var fx: Float?
         var fy: Float?
         var cx: Float?
@@ -1417,26 +1474,54 @@ struct DepthVisualization3DView: View {
             }
         }
         
-        if let fx = fx, let fy = fy, let cx = cx, let cy = cy, let width = width, let height = height {
-            return CameraIntrinsics(fx: fx, fy: fy, cx: cx, cy: cy, width: width, height: height)
-        }
+        let result: CameraIntrinsics? = {
+            if let fx = fx, let fy = fy, let cx = cx, let cy = cy, let width = width, let height = height {
+                return CameraIntrinsics(fx: fx, fy: fy, cx: cx, cy: cy, width: width, height: height)
+            } else {
+                return nil
+            }
+        }()
         
-        return nil
+        let totalTime = CFAbsoluteTimeGetCurrent() - startTime
+        print("🕐 [TIMING] parseCameraIntrinsics() completed in \(String(format: "%.3f", totalTime))s")
+        
+        return result
     }
     
     private func create3DScene(from points: [DepthPoint]) -> SCNScene {
+        let startTime = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] create3DScene() started with \(points.count) points")
+        
         let scene = SCNScene()
+        
+        let conversionStart = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Starting 3D coordinate conversion...")
         
         // Convert 2D depth data to 3D coordinates using camera intrinsics (if available)
         let measurementPoints3D = convertDepthPointsTo3D(points)
+        
+        let conversionEnd = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] 3D coordinate conversion completed in \(String(format: "%.3f", conversionEnd - conversionStart))s")
+        
+        let pointCloudStart = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Starting point cloud geometry creation...")
         
         // Create point cloud geometry using measurement coordinates
         let pointCloudGeometry = createPointCloudGeometry(from: measurementPoints3D)
         let pointCloudNode = SCNNode(geometry: pointCloudGeometry)
         
+        let pointCloudEnd = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Point cloud geometry creation completed in \(String(format: "%.3f", pointCloudEnd - pointCloudStart))s")
+        
+        let voxelStart = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Starting voxel geometry creation...")
+        
         // Create voxel geometry using the same measurement coordinates
         let (voxelGeometry, volumeInfo) = createVoxelGeometry(from: measurementPoints3D)
         let voxelNode = SCNNode(geometry: voxelGeometry)
+        
+        let voxelEnd = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Voxel geometry creation completed in \(String(format: "%.3f", voxelEnd - voxelStart))s")
         
         // Update volume information
         DispatchQueue.main.async {
@@ -1448,24 +1533,49 @@ struct DepthVisualization3DView: View {
         scene.rootNode.addChildNode(pointCloudNode)
         scene.rootNode.addChildNode(voxelNode)
         
+        let lightingStart = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Starting lighting setup...")
+        
         // Add lighting
         setupLighting(scene: scene)
         
+        let lightingEnd = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Lighting setup completed in \(String(format: "%.3f", lightingEnd - lightingStart))s")
+        
+        let cameraStart = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Starting camera setup...")
+        
         // Setup camera using measurement coordinates
         setupCamera(scene: scene, pointCloud: measurementPoints3D)
+        
+        let cameraEnd = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Camera setup completed in \(String(format: "%.3f", cameraEnd - cameraStart))s")
+        
+        let totalTime = CFAbsoluteTimeGetCurrent() - startTime
+        print("🕐 [TIMING] create3DScene() TOTAL completed in \(String(format: "%.3f", totalTime))s")
         
         return scene
     }
     
     private func convertDepthPointsTo3D(_ points: [DepthPoint]) -> [SCNVector3] {
-        guard !points.isEmpty else { return [] }
+        let startTime = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] convertDepthPointsTo3D() started with \(points.count) points")
+        
+        guard !points.isEmpty else {
+            print("🕐 [TIMING] convertDepthPointsTo3D() completed in 0.000s - no points")
+            return []
+        }
         
         var measurementPoints3D: [SCNVector3] = []
         
         guard let intrinsics = cameraIntrinsics else {
+            print("🕐 [TIMING] convertDepthPointsTo3D() completed in 0.000s - no intrinsics")
             print("No camera intrinsics available")
             return []
         }
+        
+        let calculationsStart = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Starting intrinsics calculations...")
         
         print("=== 3D CONVERSION DIAGNOSTICS ===")
         print("Camera intrinsics from CSV:")
@@ -1501,6 +1611,12 @@ struct DepthVisualization3DView: View {
         print("  Corrected: fx=\(correctedFx), fy=\(correctedFy)")
         print("  Scale factors: \(resolutionScaleX)x")
         
+        let calculationsEnd = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Intrinsics calculations completed in \(String(format: "%.3f", calculationsEnd - calculationsStart))s")
+        
+        let pointConversionStart = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Starting point-by-point conversion...")
+        
         // Sample a few points to show the conversion process
         print("Sample point conversions (first 3 points):")
         
@@ -1532,6 +1648,12 @@ struct DepthVisualization3DView: View {
             
             measurementPoints3D.append(SCNVector3(realWorldX, realWorldY, realWorldZ))
         }
+        
+        let pointConversionEnd = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Point-by-point conversion completed in \(String(format: "%.3f", pointConversionEnd - pointConversionStart))s")
+        
+        let centeringStart = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Starting centering calculations...")
         
         // Center the point cloud
         let bbox = calculateBoundingBox(measurementPoints3D)
@@ -1566,11 +1688,22 @@ struct DepthVisualization3DView: View {
         print("  Aspect ratios: W/H=\(finalWidth/finalHeight), W/D=\(finalWidth/finalDepth), H/D=\(finalHeight/finalDepth)")
         print("==================================")
         
+        let centeringEnd = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Centering calculations completed in \(String(format: "%.3f", centeringEnd - centeringStart))s")
+        
+        let totalTime = CFAbsoluteTimeGetCurrent() - startTime
+        print("🕐 [TIMING] convertDepthPointsTo3D() TOTAL completed in \(String(format: "%.3f", totalTime))s")
+        
         return measurementPoints3D
     }
     
     private func calculateBoundingBox(_ points: [SCNVector3]) -> (min: SCNVector3, max: SCNVector3) {
-        guard !points.isEmpty else { return (SCNVector3(0, 0, 0), SCNVector3(0, 0, 0)) }
+        let startTime = CFAbsoluteTimeGetCurrent()
+        
+        guard !points.isEmpty else {
+            print("🕐 [TIMING] calculateBoundingBox() completed in 0.000s - no points")
+            return (SCNVector3(0, 0, 0), SCNVector3(0, 0, 0))
+        }
         
         var minX = points[0].x, maxX = points[0].x
         var minY = points[0].y, maxY = points[0].y
@@ -1585,18 +1718,32 @@ struct DepthVisualization3DView: View {
             maxZ = Swift.max(maxZ, point.z)
         }
         
+        let totalTime = CFAbsoluteTimeGetCurrent() - startTime
+        print("🕐 [TIMING] calculateBoundingBox() completed in \(String(format: "%.3f", totalTime))s for \(points.count) points")
+        
         return (SCNVector3(minX, minY, minZ), SCNVector3(maxX, maxY, maxZ))
     }
     
     private func createVoxelGeometry(from measurementPoints3D: [SCNVector3]) -> (SCNGeometry, VoxelVolumeInfo) {
+        let startTime = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] createVoxelGeometry() started with \(measurementPoints3D.count) points")
+        
         guard !measurementPoints3D.isEmpty else {
+            print("🕐 [TIMING] createVoxelGeometry() completed in 0.000s - no points")
             return (SCNGeometry(), VoxelVolumeInfo(totalVolume: 0.0, voxelCount: 0, voxelSize: 0.0))
         }
+        
+        let bboxStart = CFAbsoluteTimeGetCurrent()
         
         // Use MEASUREMENT coordinates for everything - both volume calculation AND positioning
         let bbox = calculateBoundingBox(measurementPoints3D)
         let min = bbox.min
         let max = bbox.max
+        
+        let bboxEnd = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Bounding box calculation in voxel creation completed in \(String(format: "%.3f", bboxEnd - bboxStart))s")
+        
+        let gridCalcStart = CFAbsoluteTimeGetCurrent()
         
         let boundingBoxVolume = (max.x - min.x) * (max.y - min.y) * (max.z - min.z)
         
@@ -1621,6 +1768,12 @@ struct DepthVisualization3DView: View {
         print("Measurement Voxel Grid: \(gridX) x \(gridY) x \(gridZ) = \(gridX * gridY * gridZ) voxels")
         print("Measurement Voxel size: \(voxelSize * 1000) mm")
         
+        let gridCalcEnd = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Grid calculations completed in \(String(format: "%.3f", gridCalcEnd - gridCalcStart))s")
+        
+        let surfaceHashStart = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Starting surface voxel hashing...")
+        
         // Create spatial hash for surface points using MEASUREMENT coordinates
         var surfaceVoxels = Set<String>()
         
@@ -1636,6 +1789,12 @@ struct DepthVisualization3DView: View {
             
             surfaceVoxels.insert("\(clampedVx),\(clampedVy),\(clampedVz)")
         }
+        
+        let surfaceHashEnd = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Surface voxel hashing completed in \(String(format: "%.3f", surfaceHashEnd - surfaceHashStart))s - \(surfaceVoxels.count) surface voxels")
+        
+        let interiorFillStart = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Starting interior filling...")
         
         // Fill interior using layer-by-layer approach
         var filledVoxels = Set<String>()
@@ -1673,14 +1832,20 @@ struct DepthVisualization3DView: View {
             }
         }
         
+        let interiorFillEnd = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Interior filling completed in \(String(format: "%.3f", interiorFillEnd - interiorFillStart))s")
+        
         // Include surface voxels
         filledVoxels.formUnion(surfaceVoxels)
         
         guard !filledVoxels.isEmpty else {
+            print("🕐 [TIMING] createVoxelGeometry() completed early - no filled voxels")
             return (SCNGeometry(), VoxelVolumeInfo(totalVolume: 0.0, voxelCount: 0, voxelSize: 0.0))
         }
         
         print("Generated \(filledVoxels.count) voxel cubes")
+        
+        let volumeCalcStart = CFAbsoluteTimeGetCurrent()
         
         // Calculate total volume using MEASUREMENT coordinates (accurate)
         let singleVoxelVolume = Double(voxelSize * voxelSize * voxelSize) // in cubic meters
@@ -1694,6 +1859,12 @@ struct DepthVisualization3DView: View {
             voxelCount: filledVoxels.count,
             voxelSize: voxelSize
         )
+        
+        let volumeCalcEnd = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Volume calculations completed in \(String(format: "%.3f", volumeCalcEnd - volumeCalcStart))s")
+        
+        let geometryCreationStart = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Starting geometry creation...")
         
         // Create geometry using MEASUREMENT coordinates for consistent positioning
         var voxelVertices: [SCNVector3] = []
@@ -1736,6 +1907,11 @@ struct DepthVisualization3DView: View {
             }
         }
         
+        let vertexCreationEnd = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Vertex creation completed in \(String(format: "%.3f", vertexCreationEnd - geometryCreationStart))s")
+        
+        let geometrySourcesStart = CFAbsoluteTimeGetCurrent()
+        
         // Create geometry sources
         let vertexData = Data(bytes: voxelVertices, count: voxelVertices.count * MemoryLayout<SCNVector3>.size)
         let vertexSource = SCNGeometrySource(
@@ -1760,6 +1936,11 @@ struct DepthVisualization3DView: View {
             dataOffset: 0,
             dataStride: MemoryLayout<SCNVector3>.size
         )
+        
+        let geometrySourcesEnd = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Geometry sources creation completed in \(String(format: "%.3f", geometrySourcesEnd - geometrySourcesStart))s")
+        
+        let indicesStart = CFAbsoluteTimeGetCurrent()
         
         // Create indices for cube faces
         var indices: [UInt32] = []
@@ -1787,6 +1968,11 @@ struct DepthVisualization3DView: View {
             bytesPerIndex: MemoryLayout<UInt32>.size
         )
         
+        let indicesEnd = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Indices creation completed in \(String(format: "%.3f", indicesEnd - indicesStart))s")
+        
+        let finalGeometryStart = CFAbsoluteTimeGetCurrent()
+        
         let geometry = SCNGeometry(sources: [vertexSource, colorSource], elements: [element])
         
         // Configure material
@@ -1795,6 +1981,12 @@ struct DepthVisualization3DView: View {
         material.isDoubleSided = true
         material.transparency = 0.7
         geometry.materials = [material]
+        
+        let finalGeometryEnd = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Final geometry assembly completed in \(String(format: "%.3f", finalGeometryEnd - finalGeometryStart))s")
+        
+        let totalTime = CFAbsoluteTimeGetCurrent() - startTime
+        print("🕐 [TIMING] createVoxelGeometry() TOTAL completed in \(String(format: "%.3f", totalTime))s")
         
         return (geometry, volumeInfo)
     }
@@ -1863,7 +2055,15 @@ struct DepthVisualization3DView: View {
     }
     
     private func createPointCloudGeometry(from measurementPoints3D: [SCNVector3]) -> SCNGeometry {
-        guard !measurementPoints3D.isEmpty else { return SCNGeometry() }
+        let startTime = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] createPointCloudGeometry() started with \(measurementPoints3D.count) points")
+        
+        guard !measurementPoints3D.isEmpty else {
+            print("🕐 [TIMING] createPointCloudGeometry() completed in 0.000s - no points")
+            return SCNGeometry()
+        }
+        
+        let colorsStart = CFAbsoluteTimeGetCurrent()
         
         // Create colors based on Z coordinate (depth) in measurement space
         let bbox = calculateBoundingBox(measurementPoints3D)
@@ -1876,6 +2076,11 @@ struct DepthVisualization3DView: View {
             let color = depthToColor(invertedDepth)  // Pass inverted depth
             colors.append(color)
         }
+        
+        let colorsEnd = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Color calculations completed in \(String(format: "%.3f", colorsEnd - colorsStart))s")
+        
+        let sourcesStart = CFAbsoluteTimeGetCurrent()
         
         // Create geometry source for vertices
         let vertexData = Data(bytes: measurementPoints3D, count: measurementPoints3D.count * MemoryLayout<SCNVector3>.size)
@@ -1903,6 +2108,11 @@ struct DepthVisualization3DView: View {
             dataStride: MemoryLayout<SCNVector3>.size
         )
         
+        let sourcesEnd = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Geometry sources creation completed in \(String(format: "%.3f", sourcesEnd - sourcesStart))s")
+        
+        let elementsStart = CFAbsoluteTimeGetCurrent()
+        
         // Create indices for points
         let indices: [UInt32] = Array(0..<UInt32(measurementPoints3D.count))
         let indexData = Data(bytes: indices, count: indices.count * MemoryLayout<UInt32>.size)
@@ -1913,6 +2123,11 @@ struct DepthVisualization3DView: View {
             bytesPerIndex: MemoryLayout<UInt32>.size
         )
         
+        let elementsEnd = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Elements creation completed in \(String(format: "%.3f", elementsEnd - elementsStart))s")
+        
+        let finalAssemblyStart = CFAbsoluteTimeGetCurrent()
+        
         let geometry = SCNGeometry(sources: [vertexSource, colorSource], elements: [element])
         
         // Configure material for point cloud
@@ -1920,6 +2135,12 @@ struct DepthVisualization3DView: View {
         material.lightingModel = .constant
         material.isDoubleSided = true
         geometry.materials = [material]
+        
+        let finalAssemblyEnd = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] Final assembly completed in \(String(format: "%.3f", finalAssemblyEnd - finalAssemblyStart))s")
+        
+        let totalTime = CFAbsoluteTimeGetCurrent() - startTime
+        print("🕐 [TIMING] createPointCloudGeometry() TOTAL completed in \(String(format: "%.3f", totalTime))s")
         
         return geometry
     }
@@ -1946,10 +2167,12 @@ struct DepthVisualization3DView: View {
             return SCNVector3(1, 1 - local_t, 0)
         }
     }
-    
 
     
     private func setupLighting(scene: SCNScene) {
+        let startTime = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] setupLighting() started")
+        
         // Ambient light
         let ambientLight = SCNLight()
         ambientLight.type = .ambient
@@ -1980,9 +2203,15 @@ struct DepthVisualization3DView: View {
         secondaryLightNode.position = SCNVector3(-10, 10, -10)
         secondaryLightNode.look(at: SCNVector3(0, 0, 0))
         scene.rootNode.addChildNode(secondaryLightNode)
+        
+        let totalTime = CFAbsoluteTimeGetCurrent() - startTime
+        print("🕐 [TIMING] setupLighting() completed in \(String(format: "%.3f", totalTime))s")
     }
     
     private func setupCamera(scene: SCNScene, pointCloud: [SCNVector3]) {
+        let startTime = CFAbsoluteTimeGetCurrent()
+        print("🕐 [TIMING] setupCamera() started")
+        
         let camera = SCNCamera()
         camera.automaticallyAdjustsZRange = true
         camera.zNear = 0.001
@@ -2008,6 +2237,9 @@ struct DepthVisualization3DView: View {
         }
         
         scene.rootNode.addChildNode(cameraNode)
+        
+        let totalTime = CFAbsoluteTimeGetCurrent() - startTime
+        print("🕐 [TIMING] setupCamera() completed in \(String(format: "%.3f", totalTime))s")
     }
 }
 
