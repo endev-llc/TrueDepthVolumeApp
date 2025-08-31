@@ -1501,6 +1501,12 @@ struct DepthVisualization3DView: View {
         print("  Corrected: fx=\(correctedFx), fy=\(correctedFy)")
         print("  Scale factors: \(resolutionScaleX)x")
         
+        // Calculate average depth from all points in the captured image
+        let totalDepth = points.reduce(0.0) { $0 + $1.depth }
+        let averageDepth = points.isEmpty ? 0.5 : totalDepth / Float(points.count)
+        
+        print("Calculated average depth: \(averageDepth) meters")
+        
         // Sample a few points to show the conversion process
         print("Sample point conversions (first 3 points):")
         
@@ -1511,8 +1517,8 @@ struct DepthVisualization3DView: View {
             let pixelY = point.y
             let depthInMeters = point.depth
             
-            let realWorldX = (pixelX - correctedCx) * 0.5 / correctedFx // THIS IS THE SOLUTION TO THE WIDER AT BOTTOM DISTORTION: TO USE A CONSTANT ex. 0.5, rather than depthInMeters
-            let realWorldY = (pixelY - correctedCy) * 0.5 / correctedFy // THIS IS THE SOLUTION TO THE WIDER AT BOTTOM DISTORTION: TO USE A CONSTANT ex. 0.5, rather than depthInMeters
+            let realWorldX = (pixelX - correctedCx) * averageDepth / correctedFx // Using averageDepth instead of 0.5
+            let realWorldY = (pixelY - correctedCy) * averageDepth / correctedFy // Using averageDepth instead of 0.5
             let realWorldZ = depthInMeters
             
             print("  Point \(index): pixel(\(pixelX), \(pixelY)) depth=\(depthInMeters)m -> world(\(realWorldX), \(realWorldY), \(realWorldZ))")
@@ -1526,8 +1532,8 @@ struct DepthVisualization3DView: View {
             let pixelY = point.y
             let depthInMeters = point.depth
             
-            let realWorldX = (pixelX - correctedCx) * 0.5 / correctedFx // THIS IS THE SOLUTION TO THE WIDER AT BOTTOM DISTORTION: TO USE A CONSTANT ex. 0.5, rather than depthInMeters
-            let realWorldY = (pixelY - correctedCy) * 0.5 / correctedFy // THIS IS THE SOLUTION TO THE WIDER AT BOTTOM DISTORTION: TO USE A CONSTANT ex. 0.5, rather than depthInMeters
+            let realWorldX = (pixelX - correctedCx) * averageDepth / correctedFx // Using averageDepth instead of 0.5
+            let realWorldY = (pixelY - correctedCy) * averageDepth / correctedFy // Using averageDepth instead of 0.5
             let realWorldZ = depthInMeters
             
             measurementPoints3D.append(SCNVector3(realWorldX, realWorldY, realWorldZ))
