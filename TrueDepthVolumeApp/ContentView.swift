@@ -1211,6 +1211,8 @@ struct DepthVisualization3DView: View {
     @State private var voxelCount: Int = 0
     @State private var voxelSize: Float = 0.0
     @State private var cameraIntrinsics: CameraIntrinsics? = nil
+    @State private var showVoxels: Bool = true
+    @State private var voxelNode: SCNNode?
     
     var body: some View {
         ZStack {
@@ -1235,7 +1237,7 @@ struct DepthVisualization3DView: View {
                         
                         if voxelCount > 0 {
                             VStack(spacing: 4) {
-                                Text("Volume: \(String(format: "%.2f", totalVolume * 1_000_000 * 0.7)) cm³") // 0.7x calibration factor
+                                Text("Volume: \(String(format: "%.2f", totalVolume * 1_000_000)) cm³") // calibration factor would go here
                                     .foregroundColor(.cyan)
                                     .font(.subheadline)
                                     .fontWeight(.semibold)
@@ -1249,10 +1251,17 @@ struct DepthVisualization3DView: View {
                     
                     Spacer()
                     
-                    // Placeholder for symmetry
-                    Button("") { }
-                        .opacity(0)
-                        .padding()
+                    // Voxel toggle
+                    VStack {
+                        Toggle("Voxels", isOn: $showVoxels)
+                            .foregroundColor(.white)
+                            .font(.caption)
+                            .toggleStyle(SwitchToggleStyle(tint: .cyan))
+                            .onChange(of: showVoxels) { _, newValue in
+                                toggleVoxelVisibility(show: newValue)
+                            }
+                    }
+                    .padding()
                 }
                 
                 // 3D Scene or Loading/Error
@@ -1307,6 +1316,16 @@ struct DepthVisualization3DView: View {
         }
         .onAppear {
             loadAndCreate3DScene()
+        }
+    }
+    
+    private func toggleVoxelVisibility(show: Bool) {
+        guard let voxelNode = voxelNode else { return }
+        
+        if show {
+            scene?.rootNode.addChildNode(voxelNode)
+        } else {
+            voxelNode.removeFromParentNode()
         }
     }
     
@@ -1436,17 +1455,22 @@ struct DepthVisualization3DView: View {
         
         // Create voxel geometry using the same measurement coordinates
         let (voxelGeometry, volumeInfo) = createVoxelGeometry(from: measurementPoints3D)
-        let voxelNode = SCNNode(geometry: voxelGeometry)
+        let voxelNodeInstance = SCNNode(geometry: voxelGeometry)
         
         // Update volume information
         DispatchQueue.main.async {
             self.totalVolume = volumeInfo.totalVolume
             self.voxelCount = volumeInfo.voxelCount
             self.voxelSize = volumeInfo.voxelSize
+            self.voxelNode = voxelNodeInstance
         }
         
         scene.rootNode.addChildNode(pointCloudNode)
-        scene.rootNode.addChildNode(voxelNode)
+        
+        // Only add voxel node if showVoxels is true
+        if showVoxels {
+            scene.rootNode.addChildNode(voxelNodeInstance)
+        }
         
         // Add lighting
         setupLighting(scene: scene)
