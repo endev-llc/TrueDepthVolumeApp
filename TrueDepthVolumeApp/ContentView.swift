@@ -65,8 +65,8 @@ struct ContentView: View {
                         .cornerRadius(10)
                 }
                 
-                // Show buttons when data is captured
-                if cameraManager.capturedDepthImage != nil && cameraManager.capturedPhoto != nil {
+                // Show buttons when data is captured OR CSV is uploaded and processed
+                if cameraManager.capturedDepthImage != nil {
                     HStack(spacing: 15) {
                         Button(action: {
                             showOverlayView = true
@@ -144,26 +144,25 @@ struct ContentView: View {
             DocumentPicker(selectedFileURL: $uploadedCSVFile)
         }
         .fullScreenCover(isPresented: $showOverlayView) {
-            if let depthImage = cameraManager.capturedDepthImage,
-               let photo = cameraManager.capturedPhoto {
+            if let depthImage = cameraManager.capturedDepthImage {
                 OverlayView(
                     depthImage: depthImage,
-                    photo: photo,
+                    photo: cameraManager.capturedPhoto, // This can be nil for uploaded CSV
                     cameraManager: cameraManager,
                     onDismiss: { showOverlayView = false }
                 )
             }
         }
         .fullScreenCover(isPresented: $cameraManager.show3DView) {
-            // Prioritize uploaded CSV, then fall back to cropped file
-            if let uploadedCSV = uploadedCSVFile {
-                DepthVisualization3DView(
-                    csvFileURL: uploadedCSV,
-                    onDismiss: { cameraManager.show3DView = false }
-                )
-            } else if let croppedFileURL = cameraManager.croppedFileToShare {
+            // Prioritize cropped file, then fall back to uploaded CSV
+            if let croppedFileURL = cameraManager.croppedFileToShare {
                 DepthVisualization3DView(
                     csvFileURL: croppedFileURL,
+                    onDismiss: { cameraManager.show3DView = false }
+                )
+            } else if let uploadedCSV = uploadedCSVFile {
+                DepthVisualization3DView(
+                    csvFileURL: uploadedCSV,
                     onDismiss: { cameraManager.show3DView = false }
                 )
             }
@@ -173,13 +172,18 @@ struct ContentView: View {
                 cameraManager.captureDepthAndPhoto()
             }
         }
+        .onChange(of: uploadedCSVFile) { _, newFile in
+            if let file = newFile {
+                cameraManager.processUploadedCSV(file)
+            }
+        }
     }
 }
 
 // MARK: - Enhanced Overlay View with Drawing
 struct OverlayView: View {
     let depthImage: UIImage
-    let photo: UIImage
+    let photo: UIImage? // Made optional for uploaded CSV files
     let cameraManager: CameraManager
     let onDismiss: () -> Void
     @State private var drawingId = UUID()
@@ -207,11 +211,14 @@ struct OverlayView: View {
                     Spacer()
                     
                     if !isDrawingMode {
-                        Button(showingDepthOnly ? "Show Both" : "Depth Only") {
-                            showingDepthOnly.toggle()
+                        // Only show depth/photo toggle if photo exists
+                        if photo != nil {
+                            Button(showingDepthOnly ? "Show Both" : "Depth Only") {
+                                showingDepthOnly.toggle()
+                            }
+                            .foregroundColor(.white)
+                            .padding()
                         }
-                        .foregroundColor(.white)
-                        .padding()
                         
                         Button("Draw Outline") {
                             isDrawingMode = true
@@ -246,8 +253,8 @@ struct OverlayView: View {
                     }
                 }
                 
-                // Opacity slider
-                if !showingDepthOnly {
+                // Opacity slider (only show if photo exists and not depth only)
+                if !showingDepthOnly && photo != nil {
                     HStack {
                         Text("Photo Opacity:")
                             .foregroundColor(.white)
@@ -291,8 +298,8 @@ struct OverlayView: View {
                                 }
                             )
                         
-                        // Photo (top layer with opacity)
-                        if !showingDepthOnly {
+                        // Photo (top layer with opacity) - only show if exists and not depth only
+                        if !showingDepthOnly, let photo = photo {
                             Image(uiImage: photo)
                                 .resizable()
                                 .aspectRatio(contentMode: .fit)
@@ -564,6 +571,7 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
     private var captureCompletion: ((Bool) -> Void)?
     private var rawDepthData: AVDepthData? // Store the raw depth data for cropping
     private var cameraCalibrationData: AVCameraCalibrationData? // Store camera intrinsics
+    private var uploadedCSVData: [DepthPoint] = [] // Store uploaded CSV data for cropping
 
     override init() {
         super.init()
@@ -639,6 +647,147 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         }
     }
 
+    // MARK: - Process Uploaded CSV
+    func processUploadedCSV(_ fileURL: URL) {
+        DispatchQueue.main.async {
+            self.isProcessing = true
+        }
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let csvContent = try String(contentsOf: fileURL)
+                let depthPoints = self.parseCSVContent(csvContent)
+                
+                // Store the depth points for cropping
+                self.uploadedCSVData = depthPoints
+                
+                // Create depth visualization in portrait orientation
+                let depthImage = self.createDepthVisualizationFromCSV(depthPoints)
+                
+                DispatchQueue.main.async {
+                    self.capturedDepthImage = depthImage
+                    self.capturedPhoto = nil // No photo for uploaded CSV
+                    self.fileToShare = fileURL
+                    self.isProcessing = false
+                    
+                    // Set a filename for display
+                    self.lastSavedFileName = fileURL.lastPathComponent
+                }
+                
+            } catch {
+                DispatchQueue.main.async {
+                    self.presentError("Failed to process CSV: \(error.localizedDescription)")
+                    self.isProcessing = false
+                }
+            }
+        }
+    }
+    
+    private func parseCSVContent(_ content: String) -> [DepthPoint] {
+        var points: [DepthPoint] = []
+        let lines = content.components(separatedBy: .newlines)
+        
+        // Parse camera intrinsics from comments if available
+        for line in lines {
+            if line.hasPrefix("# Camera Intrinsics:") {
+                // Parse camera intrinsics and store them
+                // This is simplified - you might want to add full parsing
+                break
+            }
+        }
+        
+        for line in lines {
+            if line.hasPrefix("#") || line.contains("x,y,depth") || line.trimmingCharacters(in: .whitespaces).isEmpty {
+                continue
+            }
+            
+            let components = line.components(separatedBy: ",")
+            if components.count >= 3 {
+                guard let x = Float(components[0]),
+                      let y = Float(components[1]),
+                      let depth = Float(components[2]) else { continue }
+                
+                if depth.isNaN || depth.isInfinite || depth <= 0 { continue }
+                
+                points.append(DepthPoint(x: x, y: y, depth: depth))
+            }
+        }
+        
+        return points
+    }
+    
+    private func createDepthVisualizationFromCSV(_ points: [DepthPoint]) -> UIImage? {
+        guard !points.isEmpty else { return nil }
+        
+        // Determine original image dimensions based on data
+        let maxX = Int(ceil(points.map { $0.x }.max() ?? 0))
+        let maxY = Int(ceil(points.map { $0.y }.max() ?? 0))
+        
+        let originalWidth = maxX + 1
+        let originalHeight = maxY + 1
+        
+        // Create rotated dimensions to match camera capture orientation (90° rotation)
+        let rotatedWidth = originalHeight  // Swap width and height like camera capture
+        let rotatedHeight = originalWidth
+        
+        // Find min/max depth for normalization
+        let depthValues = points.map { $0.depth }.filter { !$0.isNaN && !$0.isInfinite && $0 > 0 }
+        guard !depthValues.isEmpty else { return nil }
+        
+        let minDepth = depthValues.min()!
+        let maxDepth = depthValues.max()!
+        
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
+        
+        guard let context = CGContext(data: nil,
+                                    width: rotatedWidth,
+                                    height: rotatedHeight,
+                                    bitsPerComponent: 8,
+                                    bytesPerRow: rotatedWidth * 4,
+                                    space: colorSpace,
+                                    bitmapInfo: bitmapInfo.rawValue) else {
+            return nil
+        }
+        
+        let data = context.data!.bindMemory(to: UInt8.self, capacity: rotatedWidth * rotatedHeight * 4)
+        
+        // Initialize with black background
+        for i in 0..<(rotatedWidth * rotatedHeight * 4) {
+            data[i] = 0
+        }
+        
+        // Apply jet colormap
+        let jetColormap: [[Float]] = [
+            [0, 0, 128], [0, 0, 255], [0, 128, 255], [0, 255, 255],
+            [128, 255, 128], [255, 255, 0], [255, 128, 0], [255, 0, 0], [128, 0, 0]
+        ]
+        
+        for point in points {
+            let x = Int(point.x)
+            let y = Int(point.y)
+            
+            guard x >= 0 && x < originalWidth && y >= 0 && y < originalHeight else { continue }
+            
+            let normalizedDepth = (point.depth - minDepth) / (maxDepth - minDepth)
+            let invertedDepth = 1.0 - normalizedDepth
+            let color = interpolateColor(colormap: jetColormap, t: invertedDepth)
+            
+            // Apply same rotation as camera capture: (x,y) -> (originalHeight-1-y, x)
+            let rotatedX = originalHeight - 1 - y
+            let rotatedY = x
+            let dataIndex = (rotatedY * rotatedWidth + rotatedX) * 4
+            
+            data[dataIndex] = UInt8(color[0])     // R
+            data[dataIndex + 1] = UInt8(color[1]) // G
+            data[dataIndex + 2] = UInt8(color[2]) // B
+            data[dataIndex + 3] = 255             // A
+        }
+        
+        guard let cgImage = context.makeImage() else { return nil }
+        return UIImage(cgImage: cgImage)
+    }
+
     // MARK: - Depth Data Delegate
     func depthDataOutput(_ output: AVCaptureDepthDataOutput, didOutput depthData: AVDepthData, timestamp: CMTime, connection: AVCaptureConnection) {
         self.latestDepthData = depthData
@@ -646,10 +795,6 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         // Capture camera calibration data for accurate coordinate conversion
         if let calibrationData = depthData.cameraCalibrationData {
             self.cameraCalibrationData = calibrationData
-//            print("📷 Captured camera intrinsics:")
-//            print("  Focal Length: fx=\(calibrationData.intrinsicMatrix.columns.0.x), fy=\(calibrationData.intrinsicMatrix.columns.1.y)")
-//            print("  Principal Point: cx=\(calibrationData.intrinsicMatrix.columns.2.x), cy=\(calibrationData.intrinsicMatrix.columns.2.y)")
-//            print("  Image Dimensions: \(calibrationData.intrinsicMatrixReferenceDimensions)")
         }
     }
     
@@ -730,17 +875,146 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         self.currentPhotoData = nil
     }
 
-    // MARK: - CSV Cropping Function
+    // MARK: - CSV Cropping Function (Updated to handle uploaded CSV)
     func cropDepthDataWithPath(_ path: [CGPoint]) {
-        guard let depthData = rawDepthData else {
+        if !uploadedCSVData.isEmpty {
+            // Handle uploaded CSV cropping
+            cropUploadedCSVWithPath(path)
+        } else if let depthData = rawDepthData {
+            // Handle camera-captured depth data cropping
+            saveDepthDataToFile(depthData: depthData, cropPath: path)
+        } else {
             presentError("No depth data available for cropping.")
             return
         }
         
-        saveDepthDataToFile(depthData: depthData, cropPath: path)
-        
         DispatchQueue.main.async {
             self.hasOutline = true
+        }
+    }
+    
+    private func cropUploadedCSVWithPath(_ path: [CGPoint]) {
+        guard !uploadedCSVData.isEmpty else { return }
+        
+        // Show processing indicator
+        DispatchQueue.main.async {
+            self.isProcessing = true
+        }
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            let timestamp = Int(Date().timeIntervalSince1970)
+            let fileName = "depth_data_cropped_\(timestamp).csv"
+            
+            guard let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+                DispatchQueue.main.async {
+                    self.presentError("Could not access Documents directory.")
+                    self.isProcessing = false
+                }
+                return
+            }
+            
+            let fileURL = documentsDirectory.appendingPathComponent(fileName)
+            
+            do {
+                var csvLines: [String] = []
+                csvLines.append("x,y,depth_meters")
+                
+                // READ AND PRESERVE CAMERA INTRINSICS FROM ORIGINAL FILE (same as camera capture)
+                if let originalFileURL = self.fileToShare {
+                    let originalContent = try String(contentsOf: originalFileURL)
+                    let originalLines = originalContent.components(separatedBy: .newlines)
+                    
+                    // Copy all comment lines from original file (preserves intrinsics)
+                    for line in originalLines {
+                        if line.hasPrefix("#") {
+                            csvLines.append(line)
+                        }
+                    }
+                }
+                
+                // Add cropping metadata (same as camera capture)
+                csvLines.append("# Cropped from uploaded CSV file")
+                
+                var croppedPixelCount = 0
+                
+                // Get original data dimensions (same as camera capture logic)
+                let originalMaxX = Int(ceil(self.uploadedCSVData.map { $0.x }.max() ?? 0))
+                let originalMaxY = Int(ceil(self.uploadedCSVData.map { $0.y }.max() ?? 0))
+                let originalWidth = originalMaxX + 1
+                let originalHeight = originalMaxY + 1
+                
+                // Simplify path for faster processing (same as camera capture)
+                let simplifiedPath = self.douglasPeuckerSimplify(path, epsilon: 1.0)
+                
+                var boundingBox: (minX: Int, minY: Int, maxX: Int, maxY: Int)?
+                if !simplifiedPath.isEmpty {
+                    let minX = Int(floor(simplifiedPath.map { $0.x }.min()!))
+                    let maxX = Int(ceil(simplifiedPath.map { $0.x }.max()!))
+                    let minY = Int(floor(simplifiedPath.map { $0.y }.min()!))
+                    let maxY = Int(ceil(simplifiedPath.map { $0.y }.max()!))
+                    
+                    boundingBox = (minX: minX, minY: minY, maxX: maxX, maxY: maxY)
+                }
+                
+                print("Cropping \(self.uploadedCSVData.count) points...")
+                
+                // Track depth statistics (same as camera capture)
+                var minDepth: Float = Float.infinity
+                var maxDepth: Float = -Float.infinity
+                var validPixelCount = 0
+                
+                // Process each point using EXACTLY the same logic as camera capture
+                for point in self.uploadedCSVData {
+                    let x = Int(point.x)
+                    let y = Int(point.y)
+                    
+                    var shouldInclude = true
+                    
+                    if let bbox = boundingBox {
+                        // Transform to display coordinates using SAME rotation as camera capture
+                        let displayX = originalHeight - 1 - y  // Same as camera: height - 1 - y
+                        let displayY = x                       // Same as camera: x
+                        
+                        if displayX < bbox.minX || displayX > bbox.maxX ||
+                           displayY < bbox.minY || displayY > bbox.maxY {
+                            shouldInclude = false
+                        } else {
+                            let displayPoint = CGPoint(x: CGFloat(displayX), y: CGFloat(displayY))
+                            shouldInclude = self.fastPointInPolygon(point: displayPoint, polygon: simplifiedPath)
+                        }
+                    }
+                    
+                    if shouldInclude {
+                        csvLines.append("\(point.x),\(point.y),\(String(format: "%.6f", point.depth))")
+                        croppedPixelCount += 1
+                        
+                        // Track depth stats (same as camera capture)
+                        if !point.depth.isNaN && !point.depth.isInfinite && point.depth > 0 {
+                            minDepth = min(minDepth, point.depth)
+                            maxDepth = max(maxDepth, point.depth)
+                            validPixelCount += 1
+                        }
+                    }
+                }
+                
+                let csvContent = csvLines.joined(separator: "\n")
+                try csvContent.write(to: fileURL, atomically: true, encoding: .utf8)
+                
+                print("Successfully cropped \(croppedPixelCount) points from \(self.uploadedCSVData.count) total points")
+                print("Depth range: \(minDepth) to \(maxDepth) meters, \(validPixelCount) valid depth values")
+                
+                DispatchQueue.main.async {
+                    self.lastSavedFileName = fileName
+                    self.croppedFileToShare = fileURL
+                    self.isProcessing = false
+                }
+                
+            } catch {
+                DispatchQueue.main.async {
+                    self.presentError("Failed to save cropped CSV: \(error.localizedDescription)")
+                    self.isProcessing = false
+                }
+            }
         }
     }
     
@@ -1976,8 +2250,6 @@ struct DepthVisualization3DView: View {
             return SCNVector3(1, 1 - local_t, 0)
         }
     }
-    
-
     
     private func setupLighting(scene: SCNScene) {
         // Ambient light
