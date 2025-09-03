@@ -67,35 +67,49 @@ struct ContentView: View {
                 
                 // Show buttons when data is captured OR CSV is uploaded and processed
                 if cameraManager.capturedDepthImage != nil {
-                    HStack(spacing: 15) {
-                        Button(action: {
-                            showOverlayView = true
-                        }) {
-                            Text("View Overlay")
-                                .font(.headline)
-                                .fontWeight(.bold)
+                    VStack(spacing: 15) {
+                        HStack(spacing: 15) {
+                            Button(action: {
+                                showOverlayView = true
+                            }) {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "wand.and.rays")
+                                        .font(.headline)
+                                    Text("Smart Crop")
+                                        .font(.headline)
+                                        .fontWeight(.bold)
+                                }
                                 .foregroundColor(.white)
                                 .padding()
-                                .background(Color.green)
+                                .background(
+                                    LinearGradient(
+                                        colors: [Color.blue, Color.purple],
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    )
+                                )
                                 .cornerRadius(15)
-                        }
-                        
-                        // Export button
-                        Button(action: {
-                            cameraManager.showShareSheet = true
-                        }) {
-                            Text("Export")
-                                .font(.headline)
-                                .fontWeight(.bold)
+                            }
+                            
+                            Button(action: {
+                                cameraManager.showShareSheet = true
+                            }) {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "square.and.arrow.up")
+                                        .font(.headline)
+                                    Text("Export")
+                                        .font(.headline)
+                                        .fontWeight(.bold)
+                                }
                                 .foregroundColor(.white)
                                 .padding()
                                 .background(Color.orange)
                                 .cornerRadius(15)
+                            }
+                            .disabled(cameraManager.fileToShare == nil && cameraManager.croppedFileToShare == nil)
                         }
-                        .disabled(cameraManager.fileToShare == nil && cameraManager.croppedFileToShare == nil)
                     }
                 }
-                
                 // 3D View button (show if we have uploaded CSV or cropped file)
                 if uploadedCSVFile != nil || cameraManager.croppedFileToShare != nil {
                     Button(action: {
@@ -183,7 +197,7 @@ struct ContentView: View {
 // MARK: - Enhanced Overlay View with Drawing
 struct OverlayView: View {
     let depthImage: UIImage
-    let photo: UIImage? // Made optional for uploaded CSV files
+    let photo: UIImage?
     let cameraManager: CameraManager
     let onDismiss: () -> Void
     @State private var drawingId = UUID()
@@ -194,6 +208,7 @@ struct OverlayView: View {
     @State private var drawnPath: [CGPoint] = []
     @State private var isDrawing = false
     @State private var imageFrame: CGRect = .zero
+    @State private var isAutoSegmenting = false
     
     var body: some View {
         ZStack {
@@ -210,51 +225,95 @@ struct OverlayView: View {
                     
                     Spacer()
                     
-                    if !isDrawingMode {
-                        // Only show depth/photo toggle if photo exists
-                        if photo != nil {
-                            Button(showingDepthOnly ? "Show Both" : "Depth Only") {
-                                showingDepthOnly.toggle()
+                    if !isDrawingMode && !isAutoSegmenting {
+                        HStack(spacing: 10) {
+                            if photo != nil {
+                                Button(showingDepthOnly ? "Show Both" : "Depth Only") {
+                                    showingDepthOnly.toggle()
+                                }
+                                .foregroundColor(.white)
+                                .font(.caption)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.gray.opacity(0.3))
+                                .cornerRadius(8)
+                            }
+                            
+                            // AUTO-SEGMENT BUTTON
+                            Button(action: autoSegmentObject) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "wand.and.rays")
+                                    Text("Auto")
+                                        .fontWeight(.semibold)
+                                }
                             }
                             .foregroundColor(.white)
-                            .padding()
-                        }
-                        
-                        Button("Draw Outline") {
-                            isDrawingMode = true
-                            drawnPath = []
-                        }
-                        .foregroundColor(.cyan)
-                        .padding()
-                    } else {
-                        Button("Clear") {
-                            drawnPath = []
-                            isDrawing = false
-                            drawingId = UUID() // Force DrawingOverlay to recreate
-                        }
-                        .foregroundColor(.red)
-                        .padding()
-                        
-                        Button("Cancel") {
-                            isDrawingMode = false
-                            drawnPath = []
-                        }
-                        .foregroundColor(.white)
-                        .padding()
-                        
-                        if drawnPath.count > 10 {
-                            Button("Confirm") {
-                                cropCSVWithOutline()
-                                isDrawingMode = false
+                            .font(.caption)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(LinearGradient(colors: [Color.blue, Color.purple], startPoint: .leading, endPoint: .trailing))
+                            .cornerRadius(10)
+                            
+                            // Manual draw button
+                            Button("Manual") {
+                                isDrawingMode = true
+                                drawnPath = []
                             }
-                            .foregroundColor(.green)
-                            .padding()
+                            .foregroundColor(.white)
+                            .font(.caption)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.gray.opacity(0.3))
+                            .cornerRadius(8)
                         }
+                        
+                    } else if isDrawingMode {
+                        HStack(spacing: 10) {
+                            Button("Clear") {
+                                drawnPath = []
+                                isDrawing = false
+                                drawingId = UUID()
+                            }
+                            .foregroundColor(.red)
+                            .font(.caption)
+                            
+                            Button("Cancel") {
+                                isDrawingMode = false
+                                drawnPath = []
+                            }
+                            .foregroundColor(.white)
+                            .font(.caption)
+                            
+                            if drawnPath.count > 10 {
+                                Button("Confirm") {
+                                    cropCSVWithOutline()
+                                    isDrawingMode = false
+                                }
+                                .foregroundColor(.green)
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                            }
+                        }
+                        .padding(.horizontal)
+                        
+                    } else if isAutoSegmenting {
+                        HStack {
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                .scaleEffect(0.8)
+                            Text("Detecting...")
+                                .foregroundColor(.white)
+                                .font(.caption)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color.blue.opacity(0.3))
+                        .cornerRadius(10)
                     }
                 }
                 
-                // Opacity slider (only show if photo exists and not depth only)
-                if !showingDepthOnly && photo != nil {
+                // Opacity slider
+                if !showingDepthOnly && photo != nil && !isAutoSegmenting {
                     HStack {
                         Text("Photo Opacity:")
                             .foregroundColor(.white)
@@ -268,37 +327,21 @@ struct OverlayView: View {
                 
                 Spacer()
                 
-                // Image overlay with drawing
+                // Image with overlay
                 GeometryReader { geometry in
                     ZStack {
-                        // Depth image (bottom layer)
+                        // Depth image
                         Image(uiImage: depthImage)
                             .resizable()
                             .aspectRatio(contentMode: .fit)
-                            .background(
-                                GeometryReader { imageGeometry in
-                                    Color.clear
-                                        .onAppear {
-                                            // Calculate the actual image frame within the GeometryReader
-                                            let imageAspectRatio = depthImage.size.width / depthImage.size.height
-                                            let containerAspectRatio = geometry.size.width / geometry.size.height
-                                            
-                                            if imageAspectRatio > containerAspectRatio {
-                                                // Image is wider - fit to width
-                                                let imageHeight = geometry.size.width / imageAspectRatio
-                                                let yOffset = (geometry.size.height - imageHeight) / 2
-                                                imageFrame = CGRect(x: 0, y: yOffset, width: geometry.size.width, height: imageHeight)
-                                            } else {
-                                                // Image is taller - fit to height
-                                                let imageWidth = geometry.size.height * imageAspectRatio
-                                                let xOffset = (geometry.size.width - imageWidth) / 2
-                                                imageFrame = CGRect(x: xOffset, y: 0, width: imageWidth, height: geometry.size.height)
-                                            }
-                                        }
-                                }
-                            )
+                            .onAppear {
+                                calculateImageFrame(containerSize: geometry.size)
+                            }
+                            .onChange(of: geometry.size) { _, newSize in
+                                calculateImageFrame(containerSize: newSize)
+                            }
                         
-                        // Photo (top layer with opacity) - only show if exists and not depth only
+                        // Photo overlay
                         if !showingDepthOnly, let photo = photo {
                             Image(uiImage: photo)
                                 .resizable()
@@ -306,19 +349,19 @@ struct OverlayView: View {
                                 .opacity(photoOpacity)
                         }
                         
-                        // Always include DrawingOverlay to maintain consistent positioning
+                        // Drawing overlay
                         DrawingOverlay(
                             path: $drawnPath,
                             isDrawing: $isDrawing,
                             frameSize: geometry.size,
                             imageFrame: imageFrame
                         )
-                        .id(drawingId) // Add this line
+                        .id(drawingId)
                         .allowsHitTesting(isDrawingMode)
                         .opacity(isDrawingMode ? 1.0 : 0.0)
                         
                         // Show completed outline
-                        if !isDrawingMode && !drawnPath.isEmpty {
+                        if !isDrawingMode && !drawnPath.isEmpty && !isAutoSegmenting {
                             Path { path in
                                 guard !drawnPath.isEmpty else { return }
                                 path.move(to: drawnPath[0])
@@ -335,11 +378,9 @@ struct OverlayView: View {
                 
                 Spacer()
                 
-                // Info text
-                Text(isDrawingMode ?
-                     "Draw around the object you want to isolate. Tap 'Confirm' when done." :
-                     "Align the images to ensure depth data matches visual features")
-                    .foregroundColor(.white)
+                // Instruction text
+                Text(getInstructionText())
+                    .foregroundColor(getInstructionColor())
                     .font(.caption)
                     .multilineTextAlignment(.center)
                     .padding()
@@ -347,15 +388,72 @@ struct OverlayView: View {
         }
     }
     
+    private func calculateImageFrame(containerSize: CGSize) {
+        let imageAspectRatio = depthImage.size.width / depthImage.size.height
+        let containerAspectRatio = containerSize.width / containerSize.height
+        
+        if imageAspectRatio > containerAspectRatio {
+            let imageHeight = containerSize.width / imageAspectRatio
+            let yOffset = (containerSize.height - imageHeight) / 2
+            imageFrame = CGRect(x: 0, y: yOffset, width: containerSize.width, height: imageHeight)
+        } else {
+            let imageWidth = containerSize.height * imageAspectRatio
+            let xOffset = (containerSize.width - imageWidth) / 2
+            imageFrame = CGRect(x: xOffset, y: 0, width: imageWidth, height: containerSize.height)
+        }
+    }
+    
+    private func getInstructionText() -> String {
+        if isAutoSegmenting {
+            return "AI is analyzing depth patterns..."
+        } else if isDrawingMode {
+            return "Draw around the object. Tap 'Confirm' when done."
+        } else if !drawnPath.isEmpty {
+            return "Object detected! Tap 'Done' to proceed."
+        } else {
+            return "Tap 'Auto' for AI detection or 'Manual' to draw"
+        }
+    }
+    
+    private func getInstructionColor() -> Color {
+        if isAutoSegmenting {
+            return .cyan
+        } else if !drawnPath.isEmpty {
+            return .green
+        } else {
+            return .white
+        }
+    }
+    
+    private func autoSegmentObject() {
+        isAutoSegmenting = true
+        drawnPath = []
+        
+        cameraManager.autoSegmentPrimaryObject { autoPath in
+            DispatchQueue.main.async {
+                self.isAutoSegmenting = false
+                
+                if let path = autoPath {
+                    self.drawnPath = path
+                    self.drawingId = UUID()
+                    
+                    // Haptic feedback
+                    let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+                    impactFeedback.impactOccurred()
+                } else {
+                    // Fall back to manual mode if auto fails
+                    self.isDrawingMode = true
+                }
+            }
+        }
+    }
+    
     private func cropCSVWithOutline() {
-        // Convert drawn path to depth data coordinates and crop CSV
         let imageSize = depthImage.size
         let scaledPath = drawnPath.map { point in
-            // Convert from view coordinates to image coordinates
             let relativeX = (point.x - imageFrame.minX) / imageFrame.width
             let relativeY = (point.y - imageFrame.minY) / imageFrame.height
             
-            // Convert to depth image coordinates
             let depthX = relativeX * imageSize.width
             let depthY = relativeY * imageSize.height
             
@@ -1369,6 +1467,944 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         
         return numerator / denominator
     }
+}
+
+extension CameraManager {
+    
+    // MARK: - Main Auto-Segmentation Function (Keep this unchanged)
+    func autoSegmentPrimaryObject(completion: @escaping ([CGPoint]?) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            var segmentationPath: [CGPoint]?
+            
+            if !self.uploadedCSVData.isEmpty {
+                // Process uploaded CSV data
+                segmentationPath = self.autoSegmentFromCSVData(self.uploadedCSVData)
+            } else if let depthData = self.rawDepthData {
+                // Process camera-captured depth data
+                segmentationPath = self.autoSegmentFromDepthData(depthData)
+            }
+            
+            DispatchQueue.main.async {
+                completion(segmentationPath)
+            }
+        }
+    }
+    
+    // MARK: - CSV and Camera Processing (Keep these unchanged)
+    private func autoSegmentFromCSVData(_ points: [DepthPoint]) -> [CGPoint]? {
+        guard !points.isEmpty else { return nil }
+        
+        let maxX = Int(ceil(points.map { $0.x }.max() ?? 0))
+        let maxY = Int(ceil(points.map { $0.y }.max() ?? 0))
+        let width = maxX + 1
+        let height = maxY + 1
+        
+        var depthMap = Array(repeating: Array(repeating: Float.infinity, count: width), count: height)
+        
+        for point in points {
+            let x = Int(point.x)
+            let y = Int(point.y)
+            if x >= 0 && x < width && y >= 0 && y < height && point.depth > 0 && !point.depth.isNaN {
+                depthMap[y][x] = point.depth
+            }
+        }
+        
+        return performDepthBasedSegmentation(depthMap: depthMap, originalWidth: width, originalHeight: height)
+    }
+    
+    private func autoSegmentFromDepthData(_ depthData: AVDepthData) -> [CGPoint]? {
+        let processedDepthData: AVDepthData
+        
+        if depthData.depthDataType == kCVPixelFormatType_DisparityFloat16 ||
+           depthData.depthDataType == kCVPixelFormatType_DisparityFloat32 {
+            do {
+                processedDepthData = try depthData.converting(toDepthDataType: kCVPixelFormatType_DepthFloat32)
+            } catch {
+                print("Failed to convert depth data: \(error)")
+                return nil
+            }
+        } else {
+            processedDepthData = depthData
+        }
+        
+        let depthMap = processedDepthData.depthDataMap
+        CVPixelBufferLockBaseAddress(depthMap, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(depthMap, .readOnly) }
+        
+        let width = CVPixelBufferGetWidth(depthMap)
+        let height = CVPixelBufferGetHeight(depthMap)
+        let floatBuffer = CVPixelBufferGetBaseAddress(depthMap)!.bindMemory(to: Float32.self, capacity: width * height)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(depthMap)
+        
+        var depthArray = Array(repeating: Array(repeating: Float.infinity, count: width), count: height)
+        
+        for y in 0..<height {
+            for x in 0..<width {
+                let pixelIndex = y * (bytesPerRow / MemoryLayout<Float32>.stride) + x
+                let depthValue = floatBuffer[pixelIndex]
+                if !depthValue.isNaN && !depthValue.isInfinite && depthValue > 0 {
+                    depthArray[y][x] = depthValue
+                }
+            }
+        }
+        
+        return performDepthBasedSegmentation(depthMap: depthArray, originalWidth: width, originalHeight: height)
+    }
+    
+    // MARK: - Advanced Preprocessing Functions
+    private func advancedPreprocessing(_ depthMap: [[Float]]) -> [[Float]] {
+        let height = depthMap.count
+        let width = depthMap[0].count
+        var processed = depthMap
+        
+        // Intelligent hole filling with weighted neighbors
+        for y in 1..<(height-1) {
+            for x in 1..<(width-1) {
+                if processed[y][x].isInfinite {
+                    var weightedSum: Float = 0
+                    var totalWeight: Float = 0
+                    
+                    for dy in -1...1 {
+                        for dx in -1...1 {
+                            let neighborDepth = processed[y+dy][x+dx]
+                            if !neighborDepth.isInfinite && neighborDepth > 0 {
+                                let distance = sqrt(Float(dx*dx + dy*dy))
+                                let weight = 1.0 / (1.0 + distance)
+                                weightedSum += neighborDepth * weight
+                                totalWeight += weight
+                            }
+                        }
+                    }
+                    
+                    if totalWeight > 0 {
+                        processed[y][x] = weightedSum / totalWeight
+                    }
+                }
+            }
+        }
+        
+        return processed
+    }
+    
+    private func calculateDetailedDepthStatistics(_ depthMap: [[Float]]) -> (minDepth: Float, maxDepth: Float, meanDepth: Float, medianDepth: Float, stdDev: Float)? {
+        var validDepths: [Float] = []
+        
+        for row in depthMap {
+            for depth in row {
+                if !depth.isInfinite && depth > 0 && !depth.isNaN {
+                    validDepths.append(depth)
+                }
+            }
+        }
+        
+        guard !validDepths.isEmpty else { return nil }
+        
+        validDepths.sort()
+        let minDepth = validDepths.first!
+        let maxDepth = validDepths.last!
+        let medianDepth = validDepths[validDepths.count / 2]
+        let meanDepth = validDepths.reduce(0, +) / Float(validDepths.count)
+        
+        // Calculate standard deviation
+        let variance = validDepths.map { pow($0 - meanDepth, 2) }.reduce(0, +) / Float(validDepths.count)
+        let stdDev = sqrt(variance)
+        
+        return (minDepth, maxDepth, meanDepth, medianDepth, stdDev)
+    }
+    
+    private func detectBackgroundWithConfidence(_ depthMap: [[Float]], stats: (minDepth: Float, maxDepth: Float, meanDepth: Float, medianDepth: Float, stdDev: Float)) -> (depth: Float, confidence: Float) {
+        
+        let numBins = 100
+        let binSize = (stats.maxDepth - stats.minDepth) / Float(numBins)
+        var histogram = Array(repeating: 0, count: numBins)
+        
+        for row in depthMap {
+            for depth in row {
+                if !depth.isInfinite && depth > 0 {
+                    let binIndex = min(numBins - 1, max(0, Int((depth - stats.minDepth) / binSize)))
+                    histogram[binIndex] += 1
+                }
+            }
+        }
+        
+        let maxCount = histogram.max() ?? 0
+        let maxBinIndex = histogram.enumerated().max(by: { $0.element < $1.element })?.offset ?? 0
+        let backgroundDepth = stats.minDepth + Float(maxBinIndex) * binSize + binSize / 2
+        
+        let totalPixels = depthMap.flatMap { $0 }.filter { !$0.isInfinite && $0 > 0 }.count
+        let confidence = Float(maxCount) / Float(totalPixels)
+        
+        return (backgroundDepth, confidence)
+    }
+    
+    private func createAdaptiveObjectMask(_ depthMap: [[Float]], backgroundInfo: (depth: Float, confidence: Float), stats: (minDepth: Float, maxDepth: Float, meanDepth: Float, medianDepth: Float, stdDev: Float)) -> [[Bool]] {
+        
+        let height = depthMap.count
+        let width = depthMap[0].count
+        var mask = Array(repeating: Array(repeating: false, count: width), count: height)
+        
+        let baseThreshold: Float = backgroundInfo.confidence > 0.3 ? 0.05 : 0.08
+        let depthRange = stats.maxDepth - stats.minDepth
+        let globalThreshold = backgroundInfo.depth - depthRange * baseThreshold
+        
+        print("🎯 Using adaptive threshold: \(globalThreshold) (base: \(baseThreshold))")
+        
+        for y in 0..<height {
+            for x in 0..<width {
+                let depth = depthMap[y][x]
+                if depth.isInfinite || depth <= 0 { continue }
+                
+                mask[y][x] = depth < globalThreshold
+            }
+        }
+        
+        return mask
+    }
+    
+    private func combineDepthAndEdgeDetection(_ depthMap: [[Float]], objectMask: [[Bool]], stats: (minDepth: Float, maxDepth: Float, meanDepth: Float, medianDepth: Float, stdDev: Float)) -> [[Bool]] {
+        
+        let height = depthMap.count
+        let width = depthMap[0].count
+        var combinedMask = objectMask
+        
+        // Sobel edge detection
+        let sobelX: [[Float]] = [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]]
+        let sobelY: [[Float]] = [[-1, -2, -1], [0, 0, 0], [1, 2, 1]]
+        
+        var edgeMagnitude = Array(repeating: Array(repeating: Float(0), count: width), count: height)
+        
+        for y in 1..<(height-1) {
+            for x in 1..<(width-1) {
+                var gx: Float = 0
+                var gy: Float = 0
+                
+                for ky in 0..<3 {
+                    for kx in 0..<3 {
+                        let depth = depthMap[y+ky-1][x+kx-1]
+                        let depthValue = depth.isInfinite ? stats.meanDepth : depth
+                        gx += sobelX[ky][kx] * depthValue
+                        gy += sobelY[ky][kx] * depthValue
+                    }
+                }
+                
+                edgeMagnitude[y][x] = sqrt(gx * gx + gy * gy)
+            }
+        }
+        
+        let sortedEdges = edgeMagnitude.flatMap { $0 }.sorted()
+        let edgeThreshold = sortedEdges[Int(Float(sortedEdges.count) * 0.85)]
+        
+        print("🔧 Edge threshold: \(edgeThreshold)")
+        
+        // Enhance object mask with strong edges
+        for y in 1..<(height-1) {
+            for x in 1..<(width-1) {
+                if edgeMagnitude[y][x] > edgeThreshold {
+                    var nearObject = false
+                    for dy in -2...2 {
+                        for dx in -2...2 {
+                            let ny = y + dy
+                            let nx = x + dx
+                            if ny >= 0 && ny < height && nx >= 0 && nx < width && objectMask[ny][nx] {
+                                nearObject = true
+                                break
+                            }
+                        }
+                        if nearObject { break }
+                    }
+                    
+                    if nearObject {
+                        combinedMask[y][x] = true
+                    }
+                }
+            }
+        }
+        
+        return combinedMask
+    }
+    
+    // MARK: - Morphological Operations (THESE WERE MISSING)
+    private func morphologicalErosion(_ mask: [[Bool]], kernelSize: Int) -> [[Bool]] {
+        let height = mask.count
+        let width = mask[0].count
+        var result = Array(repeating: Array(repeating: false, count: width), count: height)
+        let half = kernelSize / 2
+        
+        for y in half..<(height-half) {
+            for x in half..<(width-half) {
+                var allTrue = true
+                for ky in -half...half {
+                    for kx in -half...half {
+                        if !mask[y+ky][x+kx] {
+                            allTrue = false
+                            break
+                        }
+                    }
+                    if !allTrue { break }
+                }
+                result[y][x] = allTrue
+            }
+        }
+        
+        return result
+    }
+    
+    private func morphologicalDilation(_ mask: [[Bool]], kernelSize: Int) -> [[Bool]] {
+        let height = mask.count
+        let width = mask[0].count
+        var result = Array(repeating: Array(repeating: false, count: width), count: height)
+        let half = kernelSize / 2
+        
+        for y in half..<(height-half) {
+            for x in half..<(width-half) {
+                var anyTrue = false
+                for ky in -half...half {
+                    for kx in -half...half {
+                        if mask[y+ky][x+kx] {
+                            anyTrue = true
+                            break
+                        }
+                    }
+                    if anyTrue { break }
+                }
+                result[y][x] = anyTrue
+            }
+        }
+        
+        return result
+    }
+    
+    private func intelligentMorphologicalCleaning(_ mask: [[Bool]]) -> [[Bool]] {
+        // Remove small noise
+        var cleaned = morphologicalErosion(mask, kernelSize: 2)
+        // Fill small gaps
+        cleaned = morphologicalDilation(cleaned, kernelSize: 4)
+        // Smooth boundaries
+        cleaned = morphologicalDilation(cleaned, kernelSize: 3)
+        cleaned = morphologicalErosion(cleaned, kernelSize: 3)
+        
+        return cleaned
+    }
+    
+    // MARK: - Connected Component Analysis
+    private func findBestConnectedComponent(_ mask: [[Bool]], originalMask: [[Bool]]) -> [[Bool]] {
+        let height = mask.count
+        let width = mask[0].count
+        var visited = Array(repeating: Array(repeating: false, count: width), count: height)
+        var bestComponent = Array(repeating: Array(repeating: false, count: width), count: height)
+        var bestScore = 0.0
+        
+        func floodFill(_ startX: Int, _ startY: Int) -> (component: [(Int, Int)], score: Double) {
+            var component: [(Int, Int)] = []
+            var stack: [(Int, Int)] = [(startX, startY)]
+            var originalPixels = 0
+            
+            while !stack.isEmpty {
+                let (x, y) = stack.removeLast()
+                
+                if x < 0 || x >= width || y < 0 || y >= height || visited[y][x] || !mask[y][x] {
+                    continue
+                }
+                
+                visited[y][x] = true
+                component.append((x, y))
+                
+                if originalMask[y][x] {
+                    originalPixels += 1
+                }
+                
+                stack.append(contentsOf: [(x+1, y), (x-1, y), (x, y+1), (x, y-1)])
+            }
+            
+            let consistencyScore = component.isEmpty ? 0.0 : Double(originalPixels) / Double(component.count)
+            let sizeScore = Double(component.count)
+            let combinedScore = sizeScore * (0.3 + 0.7 * consistencyScore)
+            
+            return (component, combinedScore)
+        }
+        
+        for y in 0..<height {
+            for x in 0..<width {
+                if mask[y][x] && !visited[y][x] {
+                    let result = floodFill(x, y)
+                    if result.score > bestScore {
+                        bestScore = result.score
+                        bestComponent = Array(repeating: Array(repeating: false, count: width), count: height)
+                        for (cx, cy) in result.component {
+                            bestComponent[cy][cx] = true
+                        }
+                    }
+                }
+            }
+        }
+        
+        print("🎯 Best component score: \(bestScore)")
+        return bestComponent
+    }
+    
+    // MARK: - Contour Extraction
+    private func extractDetailedContour(_ mask: [[Bool]]) -> [CGPoint] {
+        let height = mask.count
+        let width = mask[0].count
+        
+        var boundaryPixels: [CGPoint] = []
+        
+        for y in 1..<(height-1) {
+            for x in 1..<(width-1) {
+                if mask[y][x] {
+                    var isBoundary = false
+                    for dy in -1...1 {
+                        for dx in -1...1 {
+                            let nx = x + dx
+                            let ny = y + dy
+                            if nx >= 0 && nx < width && ny >= 0 && ny < height && !mask[ny][nx] {
+                                isBoundary = true
+                                break
+                            }
+                        }
+                        if isBoundary { break }
+                    }
+                    
+                    if isBoundary {
+                        boundaryPixels.append(CGPoint(x: x, y: y))
+                    }
+                }
+            }
+        }
+        
+        guard !boundaryPixels.isEmpty else { return [] }
+        
+        print("🔧 Found \(boundaryPixels.count) boundary pixels")
+        
+        // Create ordered contour
+        var orderedContour: [CGPoint] = []
+        var remaining = Set(boundaryPixels.map { "\(Int($0.x)),\(Int($0.y))" })
+        
+        var current = boundaryPixels.min { $0.x < $1.x } ?? boundaryPixels[0]
+        
+        while !remaining.isEmpty {
+            let currentKey = "\(Int(current.x)),\(Int(current.y))"
+            if remaining.contains(currentKey) {
+                orderedContour.append(current)
+                remaining.remove(currentKey)
+            }
+            
+            var nearestDistance: CGFloat = CGFloat.infinity
+            var nearestPixel = current
+            
+            for pixel in boundaryPixels {
+                let pixelKey = "\(Int(pixel.x)),\(Int(pixel.y))"
+                if remaining.contains(pixelKey) {
+                    let distance = sqrt(pow(pixel.x - current.x, 2) + pow(pixel.y - current.y, 2))
+                    if distance < nearestDistance && distance < 3.0 {
+                        nearestDistance = distance
+                        nearestPixel = pixel
+                    }
+                }
+            }
+            
+            if nearestDistance == CGFloat.infinity {
+                for pixel in boundaryPixels {
+                    let pixelKey = "\(Int(pixel.x)),\(Int(pixel.y))"
+                    if remaining.contains(pixelKey) {
+                        let distance = sqrt(pow(pixel.x - current.x, 2) + pow(pixel.y - current.y, 2))
+                        if distance < nearestDistance {
+                            nearestDistance = distance
+                            nearestPixel = pixel
+                        }
+                    }
+                }
+            }
+            
+            current = nearestPixel
+            
+            if orderedContour.count > boundaryPixels.count * 2 {
+                break
+            }
+        }
+        
+        return orderedContour
+    }
+    
+    private func intelligentContourRefinement(_ contour: [CGPoint]) -> [CGPoint] {
+        guard contour.count > 10 else { return contour }
+        
+        var smoothed = contour
+        if contour.count > 20 {
+            smoothed = []
+            let windowSize = 3
+            
+            for i in 0..<contour.count {
+                var avgX: CGFloat = 0
+                var avgY: CGFloat = 0
+                
+                for j in 0..<windowSize {
+                    let index = (i + j - windowSize/2 + contour.count) % contour.count
+                    avgX += contour[index].x
+                    avgY += contour[index].y
+                }
+                
+                avgX /= CGFloat(windowSize)
+                avgY /= CGFloat(windowSize)
+                smoothed.append(CGPoint(x: avgX, y: avgY))
+            }
+        }
+        
+        let simplified = douglasPeuckerSimplify(smoothed, epsilon: 0.8)
+        
+        print("🔧 Contour refinement: \(contour.count) → \(smoothed.count) → \(simplified.count)")
+        
+        return simplified
+    }
+    
+    // MARK: - Coordinate Conversion (THIS WAS MISSING)
+    private func convertToDisplayCoordinates(_ contour: [CGPoint], originalWidth: Int, originalHeight: Int) -> [CGPoint] {
+        // Apply same rotation as your existing overlay: (x,y) -> (originalHeight-1-y, x)
+        return contour.map { point in
+            let displayX = CGFloat(originalHeight - 1) - point.y
+            let displayY = point.x
+            return CGPoint(x: displayX, y: displayY)
+        }
+    }
+    
+    private func performDepthBasedSegmentation(depthMap: [[Float]], originalWidth: Int, originalHeight: Int) -> [CGPoint]? {
+            
+            print("🔍 Starting FIXED auto-segmentation on \(originalWidth)x\(originalHeight) depth map")
+            
+            // Step 1: Better preprocessing
+            let processedDepth = improvedPreprocessing(depthMap)
+            
+            // Step 2: Enhanced statistics
+            guard let stats = calculateDetailedDepthStatistics(processedDepth) else {
+                print("❌ No valid depth data found")
+                return nil
+            }
+            
+            print("📊 Depth analysis:")
+            print("   Range: \(stats.minDepth) to \(stats.maxDepth) (\((stats.maxDepth-stats.minDepth)*100)cm)")
+            print("   Mean: \(stats.meanDepth), Median: \(stats.medianDepth)")
+            print("   StdDev: \(stats.stdDev)")
+            
+            // Step 3: Multi-threshold approach
+            let backgroundInfo = detectBackgroundWithConfidence(processedDepth, stats: stats)
+            print("🎯 Background: \(backgroundInfo.depth)m (conf: \(backgroundInfo.confidence))")
+            
+            // Step 4: Try multiple threshold strategies
+            let bestMask = findBestObjectMask(processedDepth, backgroundInfo: backgroundInfo, stats: stats)
+            
+            // Step 5: Clean up mask
+            let cleanedMask = improvedMorphologicalCleaning(bestMask, stats: stats)
+            
+            // Step 6: Get best component
+            let primaryObjectMask = findBestConnectedComponent(cleanedMask, originalMask: bestMask)
+            
+            // Step 7: PROPER contour tracing using Moore neighborhood algorithm
+            let rawContour = mooreNeighborhoodContourTracing(primaryObjectMask)
+            guard !rawContour.isEmpty else {
+                print("❌ Moore tracing failed, trying backup method")
+                return fallbackContourExtraction(primaryObjectMask, originalWidth: originalWidth, originalHeight: originalHeight)
+            }
+            
+            print("🔧 Moore tracing found: \(rawContour.count) contour points")
+            
+            // Step 8: Conservative refinement (preserve much more detail)
+            let refinedContour = conservativeContourRefinement(rawContour, targetPoints: 200)
+            
+            print("🔧 After refinement: \(refinedContour.count) points")
+            
+            // Step 9: Convert coordinates
+            let displayContour = convertToDisplayCoordinates(
+                refinedContour,
+                originalWidth: originalWidth,
+                originalHeight: originalHeight
+            )
+            
+            print("✅ FIXED segmentation complete: \(displayContour.count) final contour points")
+            return displayContour.isEmpty ? nil : displayContour
+        }
+        
+        // MARK: - Improved Preprocessing
+        private func improvedPreprocessing(_ depthMap: [[Float]]) -> [[Float]] {
+            let height = depthMap.count
+            let width = depthMap[0].count
+            var processed = depthMap
+            
+            // Step 1: More intelligent hole filling
+            for iteration in 0..<2 { // Multiple passes
+                var newProcessed = processed
+                
+                for y in 1..<(height-1) {
+                    for x in 1..<(width-1) {
+                        if processed[y][x].isInfinite {
+                            var validNeighbors: [(depth: Float, weight: Float)] = []
+                            
+                            // Check 8-connected neighbors with distance weighting
+                            for dy in -1...1 {
+                                for dx in -1...1 {
+                                    if dy == 0 && dx == 0 { continue }
+                                    let neighborDepth = processed[y+dy][x+dx]
+                                    if !neighborDepth.isInfinite && neighborDepth > 0 {
+                                        let distance = sqrt(Float(dx*dx + dy*dy))
+                                        let weight = 1.0 / (1.0 + distance * distance)
+                                        validNeighbors.append((neighborDepth, weight))
+                                    }
+                                }
+                            }
+                            
+                            if validNeighbors.count >= 3 { // Need at least 3 valid neighbors
+                                let weightedSum = validNeighbors.reduce(0) { $0 + $1.depth * $1.weight }
+                                let totalWeight = validNeighbors.reduce(0) { $0 + $1.weight }
+                                newProcessed[y][x] = weightedSum / totalWeight
+                            }
+                        }
+                    }
+                }
+                processed = newProcessed
+            }
+            
+            // Step 2: Light median filtering to reduce noise
+            processed = medianFilter(processed, kernelSize: 3)
+            
+            return processed
+        }
+        
+        // MARK: - Median Filter
+        private func medianFilter(_ depthMap: [[Float]], kernelSize: Int) -> [[Float]] {
+            let height = depthMap.count
+            let width = depthMap[0].count
+            var filtered = depthMap
+            let half = kernelSize / 2
+            
+            for y in half..<(height-half) {
+                for x in half..<(width-half) {
+                    var neighborhood: [Float] = []
+                    
+                    for ky in -half...half {
+                        for kx in -half...half {
+                            let depth = depthMap[y+ky][x+kx]
+                            if !depth.isInfinite && depth > 0 {
+                                neighborhood.append(depth)
+                            }
+                        }
+                    }
+                    
+                    if neighborhood.count >= 5 { // Need sufficient valid pixels
+                        neighborhood.sort()
+                        filtered[y][x] = neighborhood[neighborhood.count / 2]
+                    }
+                }
+            }
+            
+            return filtered
+        }
+        
+        // MARK: - Multi-threshold Object Detection
+        private func findBestObjectMask(_ depthMap: [[Float]], backgroundInfo: (depth: Float, confidence: Float), stats: (minDepth: Float, maxDepth: Float, meanDepth: Float, medianDepth: Float, stdDev: Float)) -> [[Bool]] {
+            
+            let height = depthMap.count
+            let width = depthMap[0].count
+            
+            // Try multiple threshold strategies
+            let depthRange = stats.maxDepth - stats.minDepth
+            
+            var thresholds: [Float] = []
+            
+            if backgroundInfo.confidence > 0.2 {
+                // High confidence - use background-based thresholds
+                thresholds = [
+                    backgroundInfo.depth - depthRange * 0.03, // Very conservative
+                    backgroundInfo.depth - depthRange * 0.05, // Conservative
+                    backgroundInfo.depth - depthRange * 0.08  // Aggressive
+                ]
+            } else {
+                // Low confidence - use statistical thresholds
+                thresholds = [
+                    stats.medianDepth - stats.stdDev * 0.5,
+                    stats.medianDepth - stats.stdDev * 1.0,
+                    stats.medianDepth - stats.stdDev * 1.5
+                ]
+            }
+            
+            print("🎯 Trying thresholds: \(thresholds.map { String(format: "%.3f", $0) }.joined(separator: ", "))")
+            
+            var bestMask: [[Bool]]?
+            var bestScore = 0.0
+            
+            for threshold in thresholds {
+                var mask = Array(repeating: Array(repeating: false, count: width), count: height)
+                var objectPixels = 0
+                
+                // Create mask
+                for y in 0..<height {
+                    for x in 0..<width {
+                        let depth = depthMap[y][x]
+                        if !depth.isInfinite && depth > 0 && depth < threshold {
+                            mask[y][x] = true
+                            objectPixels += 1
+                        }
+                    }
+                }
+                
+                // Score this mask based on compactness and size
+                let compactness = calculateMaskCompactness(mask)
+                let sizeScore = Double(objectPixels)
+                let totalScore = sizeScore * compactness
+                
+                print("🔧 Threshold \(String(format: "%.3f", threshold)): \(objectPixels) pixels, compactness: \(String(format: "%.3f", compactness)), score: \(String(format: "%.1f", totalScore))")
+                
+                if totalScore > bestScore {
+                    bestScore = totalScore
+                    bestMask = mask
+                }
+            }
+            
+            return bestMask ?? Array(repeating: Array(repeating: false, count: width), count: height)
+        }
+        
+        // MARK: - Mask Compactness Calculation
+        private func calculateMaskCompactness(_ mask: [[Bool]]) -> Double {
+            let height = mask.count
+            let width = mask[0].count
+            
+            var objectPixels = 0
+            var minX = width, maxX = 0
+            var minY = height, maxY = 0
+            
+            for y in 0..<height {
+                for x in 0..<width {
+                    if mask[y][x] {
+                        objectPixels += 1
+                        minX = min(minX, x)
+                        maxX = max(maxX, x)
+                        minY = min(minY, y)
+                        maxY = max(maxY, y)
+                    }
+                }
+            }
+            
+            guard objectPixels > 0 else { return 0.0 }
+            
+            let boundingBoxArea = (maxX - minX + 1) * (maxY - minY + 1)
+            let compactness = Double(objectPixels) / Double(boundingBoxArea)
+            
+            return compactness
+        }
+        
+        // MARK: - Improved Morphological Cleaning
+        private func improvedMorphologicalCleaning(_ mask: [[Bool]], stats: (minDepth: Float, maxDepth: Float, meanDepth: Float, medianDepth: Float, stdDev: Float)) -> [[Bool]] {
+            
+            // Adaptive kernel sizes based on image resolution
+            let height = mask.count
+            let width = mask[0].count
+            let imageSize = sqrt(Double(width * height))
+            
+            let smallKernel = max(1, Int(imageSize / 200)) // ~2-3 for typical images
+            let mediumKernel = max(2, Int(imageSize / 100)) // ~4-6 for typical images
+            
+            print("🔧 Morphological cleaning with kernels: \(smallKernel), \(mediumKernel)")
+            
+            // Step 1: Remove small noise
+            var cleaned = morphologicalErosion(mask, kernelSize: smallKernel)
+            
+            // Step 2: Fill gaps
+            cleaned = morphologicalDilation(cleaned, kernelSize: mediumKernel)
+            
+            // Step 3: Smooth boundaries
+            cleaned = morphologicalErosion(cleaned, kernelSize: smallKernel)
+            
+            return cleaned
+        }
+        
+        // MARK: - PROPER Moore Neighborhood Contour Tracing
+        private func mooreNeighborhoodContourTracing(_ mask: [[Bool]]) -> [CGPoint] {
+            let height = mask.count
+            let width = mask[0].count
+            
+            // Find starting point (first object pixel from top-left)
+            var startPoint: (x: Int, y: Int)?
+            
+            outerSearch: for y in 0..<height {
+                for x in 0..<width {
+                    if mask[y][x] {
+                        startPoint = (x, y)
+                        break outerSearch
+                    }
+                }
+            }
+            
+            guard let start = startPoint else { return [] }
+            
+            // Moore neighborhood directions (8-connected)
+            // Starting from right and going clockwise
+            let directions = [
+                (1, 0),   // 0: Right
+                (1, 1),   // 1: Bottom-right
+                (0, 1),   // 2: Bottom
+                (-1, 1),  // 3: Bottom-left
+                (-1, 0),  // 4: Left
+                (-1, -1), // 5: Top-left
+                (0, -1),  // 6: Top
+                (1, -1)   // 7: Top-right
+            ]
+            
+            var contour: [CGPoint] = []
+            var current = start
+            var direction = 6 // Start looking upward (will wrap to find first boundary)
+            
+            let maxIterations = width * height // Safety limit
+            var iterations = 0
+            
+            repeat {
+                contour.append(CGPoint(x: current.x, y: current.y))
+                
+                // Look for next boundary pixel using Moore neighborhood
+                var found = false
+                var searchDirection = (direction + 6) % 8 // Start 90° counterclockwise from last direction
+                
+                for _ in 0..<8 {
+                    let (dx, dy) = directions[searchDirection]
+                    let nextX = current.x + dx
+                    let nextY = current.y + dy
+                    
+                    // Check bounds and if pixel is part of object
+                    if nextX >= 0 && nextX < width && nextY >= 0 && nextY < height && mask[nextY][nextX] {
+                        // Found next boundary pixel
+                        current = (nextX, nextY)
+                        direction = searchDirection
+                        found = true
+                        break
+                    }
+                    
+                    searchDirection = (searchDirection + 1) % 8
+                }
+                
+                if !found {
+                    print("⚠️ Moore tracing lost boundary at (\(current.x), \(current.y))")
+                    break
+                }
+                
+                iterations += 1
+                
+            } while (current.x != start.x || current.y != start.y) && iterations < maxIterations
+            
+            if iterations >= maxIterations {
+                print("⚠️ Moore tracing hit iteration limit")
+            }
+            
+            print("🔧 Moore tracing completed in \(iterations) iterations")
+            return contour
+        }
+        
+        // MARK: - Fallback Contour Extraction
+        private func fallbackContourExtraction(_ mask: [[Bool]], originalWidth: Int, originalHeight: Int) -> [CGPoint]? {
+            print("🔧 Using fallback contour extraction")
+            
+            // Simple but reliable boundary pixel extraction
+            let height = mask.count
+            let width = mask[0].count
+            var boundaryPixels: [CGPoint] = []
+            
+            for y in 1..<(height-1) {
+                for x in 1..<(width-1) {
+                    if mask[y][x] {
+                        // Check if it's a boundary pixel
+                        var isBoundary = false
+                        for dy in -1...1 {
+                            for dx in -1...1 {
+                                let nx = x + dx
+                                let ny = y + dy
+                                if nx >= 0 && nx < width && ny >= 0 && ny < height && !mask[ny][nx] {
+                                    isBoundary = true
+                                    break
+                                }
+                            }
+                            if isBoundary { break }
+                        }
+                        
+                        if isBoundary {
+                            boundaryPixels.append(CGPoint(x: x, y: y))
+                        }
+                    }
+                }
+            }
+            
+            guard !boundaryPixels.isEmpty else { return nil }
+            
+            print("🔧 Fallback found \(boundaryPixels.count) boundary pixels")
+            
+            // Create a more conservative outline using convex hull
+            let hull = convexHull(boundaryPixels)
+            let refined = conservativeContourRefinement(hull, targetPoints: 150)
+            
+            return convertToDisplayCoordinates(refined, originalWidth: originalWidth, originalHeight: originalHeight)
+        }
+        
+        // MARK: - Convex Hull for Fallback
+        private func convexHull(_ points: [CGPoint]) -> [CGPoint] {
+            guard points.count > 3 else { return points }
+            
+            let sortedPoints = points.sorted { p1, p2 in
+                if p1.x != p2.x { return p1.x < p2.x }
+                return p1.y < p2.y
+            }
+            
+            func cross(_ O: CGPoint, _ A: CGPoint, _ B: CGPoint) -> CGFloat {
+                return (A.x - O.x) * (B.y - O.y) - (A.y - O.y) * (B.x - O.x)
+            }
+            
+            // Build lower hull
+            var hull: [CGPoint] = []
+            for p in sortedPoints {
+                while hull.count >= 2 && cross(hull[hull.count-2], hull[hull.count-1], p) <= 0 {
+                    hull.removeLast()
+                }
+                hull.append(p)
+            }
+            
+            // Build upper hull
+            let t = hull.count + 1
+            for p in sortedPoints.reversed() {
+                while hull.count >= t && cross(hull[hull.count-2], hull[hull.count-1], p) <= 0 {
+                    hull.removeLast()
+                }
+                hull.append(p)
+            }
+            
+            hull.removeLast() // Remove duplicate point
+            return hull
+        }
+        
+        // MARK: - Conservative Contour Refinement
+        private func conservativeContourRefinement(_ contour: [CGPoint], targetPoints: Int) -> [CGPoint] {
+            guard contour.count > targetPoints else { return contour }
+            
+            print("🔧 Conservative refinement: \(contour.count) → target: \(targetPoints)")
+            
+            // Very light smoothing first (preserve 95% of detail)
+            var smoothed = contour
+            if contour.count > 50 {
+                smoothed = []
+                for i in 0..<contour.count {
+                    let prev = contour[(i - 1 + contour.count) % contour.count]
+                    let curr = contour[i]
+                    let next = contour[(i + 1) % contour.count]
+                    
+                    // Very light averaging (90% current point, 5% each neighbor)
+                    let avgX = curr.x * 0.9 + prev.x * 0.05 + next.x * 0.05
+                    let avgY = curr.y * 0.9 + prev.y * 0.05 + next.y * 0.05
+                    
+                    smoothed.append(CGPoint(x: avgX, y: avgY))
+                }
+            }
+            
+            // Conservative Douglas-Peucker
+            let epsilon = CGFloat(0.3) // Much more conservative
+            let simplified = douglasPeuckerSimplify(smoothed, epsilon: epsilon)
+            
+            print("🔧 Final refinement: \(contour.count) → \(smoothed.count) → \(simplified.count)")
+            
+            return simplified
+        }
 }
 
 // MARK: - Helper Utilities (unchanged)
