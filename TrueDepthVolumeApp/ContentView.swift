@@ -1411,7 +1411,10 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
                 
                 if !contour.isEmpty {
                     print("✅ Depth gradient segmentation detected contour with \(contour.count) points")
-                    // Optionally update UI or trigger other actions
+                    
+                    // NEW: Automatically crop CSV using the detected contour
+                    self?.cropDepthDataWithPath(contour)
+                    
                 } else {
                     print("❌ No contour detected by depth gradient segmentation")
                 }
