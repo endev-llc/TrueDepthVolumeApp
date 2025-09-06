@@ -889,6 +889,10 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         // Save CSV file
         self.saveDepthDataToFile(depthData: depthData)
         
+        // NEW: Extract depth points and process with gradient segmentation (same as uploaded CSV)
+        let capturedDepthPoints = extractDepthPointsFromCapturedData(depthData)
+        processDepthDataWithGradientSegmentation(capturedDepthPoints)
+        
         DispatchQueue.main.async {
             self.capturedDepthImage = depthImage
             self.capturedPhoto = photo
@@ -1413,6 +1417,53 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
                 }
             }
         }
+    }
+    
+    private func extractDepthPointsFromCapturedData(_ depthData: AVDepthData) -> [DepthPoint] {
+        let processedDepthData: AVDepthData
+        
+        if depthData.depthDataType == kCVPixelFormatType_DisparityFloat16 ||
+           depthData.depthDataType == kCVPixelFormatType_DisparityFloat32 {
+            do {
+                processedDepthData = try depthData.converting(toDepthDataType: kCVPixelFormatType_DepthFloat32)
+            } catch {
+                print("Failed to convert disparity to depth: \(error)")
+                return []
+            }
+        } else {
+            do {
+                processedDepthData = try depthData.converting(toDepthDataType: kCVPixelFormatType_DepthFloat32)
+            } catch {
+                print("Failed to convert depth data format: \(error)")
+                return []
+            }
+        }
+        
+        let depthMap = processedDepthData.depthDataMap
+        CVPixelBufferLockBaseAddress(depthMap, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(depthMap, .readOnly) }
+        
+        let width = CVPixelBufferGetWidth(depthMap)
+        let height = CVPixelBufferGetHeight(depthMap)
+        let floatBuffer = CVPixelBufferGetBaseAddress(depthMap)!.bindMemory(to: Float32.self, capacity: width * height)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(depthMap)
+        
+        var depthPoints: [DepthPoint] = []
+        
+        for y in 0..<height {
+            for x in 0..<width {
+                let pixelIndex = y * (bytesPerRow / MemoryLayout<Float32>.stride) + x
+                let depthValue = floatBuffer[pixelIndex]
+                
+                // Skip invalid depth values (same logic as CSV parsing)
+                if !depthValue.isNaN && !depthValue.isInfinite && depthValue > 0 {
+                    depthPoints.append(DepthPoint(x: Float(x), y: Float(y), depth: depthValue))
+                }
+            }
+        }
+        
+        print("📊 Extracted \(depthPoints.count) valid depth points from captured data")
+        return depthPoints
     }
 }
 
