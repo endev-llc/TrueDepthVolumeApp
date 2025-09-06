@@ -1,0 +1,20 @@
+# Xcode
+*.xcodeproj/*
+!*.xcodeproj/project.pbxproj
+!*.xcodeproj/xcshareddata/
+!*.xcodeproj/project.xcworkspace/
+*.xcworkspace/*
+!*.xcworkspace/contents.xcworkspacedata
+
+# Build products
+build/
+DerivedData/
+*.dSYM.zip
+*.dSYM
+
+# CocoaPods (if using)
+Pods/
+Podfile.lock
+
+# Dependencies
+*.framework

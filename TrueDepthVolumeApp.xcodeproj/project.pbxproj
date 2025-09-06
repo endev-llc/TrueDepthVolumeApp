@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		570A68E02E6BF0C8003DDB74 /* OpenCV in Frameworks */ = {isa = PBXBuildFile; productRef = 570A68DF2E6BF0C8003DDB74 /* OpenCV */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		577987662E00A430006E5AD3 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -42,6 +46,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				570A68E02E6BF0C8003DDB74 /* OpenCV in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -100,6 +105,7 @@
 			);
 			name = TrueDepthVolumeApp;
 			packageProductDependencies = (
+				570A68DF2E6BF0C8003DDB74 /* OpenCV */,
 			);
 			productName = "landing-page-mockups";
 			productReference = 577987582E00A42E006E5AD3 /* TrueDepthVolumeApp.app */;
@@ -157,6 +163,7 @@
 				TargetAttributes = {
 					577987572E00A42E006E5AD3 = {
 						CreatedOnToolsVersion = 16.3;
+						LastSwiftMigration = 1640;
 					};
 					577987642E00A430006E5AD3 = {
 						CreatedOnToolsVersion = 16.3;
@@ -177,6 +184,9 @@
 			);
 			mainGroup = 5779874F2E00A42E006E5AD3;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				570A68DE2E6BF0C8003DDB74 /* XCRemoteSwiftPackageReference "opencv-spm" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 577987592E00A42E006E5AD3 /* Products */;
 			projectDirPath = "";
@@ -377,6 +387,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = CS8BA285Y7;
@@ -396,6 +407,8 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.tech.endev.TrueDepthVolumeApp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "TrueDepthVolumeApp/TrueDepthVolumeApp-Bridging-Header.h";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -406,6 +419,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = CS8BA285Y7;
@@ -425,6 +439,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.tech.endev.TrueDepthVolumeApp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "TrueDepthVolumeApp/TrueDepthVolumeApp-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -542,6 +557,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		570A68DE2E6BF0C8003DDB74 /* XCRemoteSwiftPackageReference "opencv-spm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/yeatse/opencv-spm.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 4.12.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		570A68DF2E6BF0C8003DDB74 /* OpenCV */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 570A68DE2E6BF0C8003DDB74 /* XCRemoteSwiftPackageReference "opencv-spm" */;
+			productName = OpenCV;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 577987502E00A42E006E5AD3 /* Project object */;
 }
