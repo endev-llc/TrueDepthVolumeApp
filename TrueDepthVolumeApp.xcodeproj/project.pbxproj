@@ -8,6 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		570A68E02E6BF0C8003DDB74 /* OpenCV in Frameworks */ = {isa = PBXBuildFile; productRef = 570A68DF2E6BF0C8003DDB74 /* OpenCV */; };
+		57EF41232E70ACFE008E2853 /* onnxruntime in Frameworks */ = {isa = PBXBuildFile; productRef = 57EF41222E70ACFE008E2853 /* onnxruntime */; };
+		57EF41252E70ACFE008E2853 /* onnxruntime_extensions in Frameworks */ = {isa = PBXBuildFile; productRef = 57EF41242E70ACFE008E2853 /* onnxruntime_extensions */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -46,7 +48,9 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				57EF41232E70ACFE008E2853 /* onnxruntime in Frameworks */,
 				570A68E02E6BF0C8003DDB74 /* OpenCV in Frameworks */,
+				57EF41252E70ACFE008E2853 /* onnxruntime_extensions in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -106,6 +110,8 @@
 			name = TrueDepthVolumeApp;
 			packageProductDependencies = (
 				570A68DF2E6BF0C8003DDB74 /* OpenCV */,
+				57EF41222E70ACFE008E2853 /* onnxruntime */,
+				57EF41242E70ACFE008E2853 /* onnxruntime_extensions */,
 			);
 			productName = "landing-page-mockups";
 			productReference = 577987582E00A42E006E5AD3 /* TrueDepthVolumeApp.app */;
@@ -186,6 +192,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				570A68DE2E6BF0C8003DDB74 /* XCRemoteSwiftPackageReference "opencv-spm" */,
+				57EF41212E70ACFE008E2853 /* XCRemoteSwiftPackageReference "onnxruntime-swift-package-manager" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 577987592E00A42E006E5AD3 /* Products */;
@@ -407,7 +414,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.tech.endev.TrueDepthVolumeApp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "TrueDepthVolumeApp/TrueDepthVolumeApp-Bridging-Header.h";
+				SWIFT_OBJC_BRIDGING_HEADER = "";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -439,7 +446,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.tech.endev.TrueDepthVolumeApp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "TrueDepthVolumeApp/TrueDepthVolumeApp-Bridging-Header.h";
+				SWIFT_OBJC_BRIDGING_HEADER = "";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -567,6 +574,14 @@
 				minimumVersion = 4.12.0;
 			};
 		};
+		57EF41212E70ACFE008E2853 /* XCRemoteSwiftPackageReference "onnxruntime-swift-package-manager" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/microsoft/onnxruntime-swift-package-manager";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.20.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -574,6 +589,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 570A68DE2E6BF0C8003DDB74 /* XCRemoteSwiftPackageReference "opencv-spm" */;
 			productName = OpenCV;
+		};
+		57EF41222E70ACFE008E2853 /* onnxruntime */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 57EF41212E70ACFE008E2853 /* XCRemoteSwiftPackageReference "onnxruntime-swift-package-manager" */;
+			productName = onnxruntime;
+		};
+		57EF41242E70ACFE008E2853 /* onnxruntime_extensions */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 57EF41212E70ACFE008E2853 /* XCRemoteSwiftPackageReference "onnxruntime-swift-package-manager" */;
+			productName = onnxruntime_extensions;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
