@@ -7,12 +7,29 @@
 
 import SwiftUI
 
-// MARK: - Main SwiftUI View
 @main
 struct TrueDepthVolumeApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            MainTabView()
+        }
+    }
+}
+
+struct MainTabView: View {
+    var body: some View {
+        TabView {
+            MobileSAMView()
+                .tabItem {
+                    Image(systemName: "photo.circle")
+                    Text("MobileSAM")
+                }
+            
+            TrueDepthCameraView()
+                .tabItem {
+                    Image(systemName: "camera.fill")
+                    Text("3D Volume")
+                }
         }
     }
 }
