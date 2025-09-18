@@ -264,6 +264,105 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         guard let cgImage = context.makeImage() else { return nil }
         return UIImage(cgImage: cgImage)
     }
+    
+    // MARK: - Mask Expansion for 3D Object Completeness
+    private func expandMaskFor3DObject(_ maskImage: UIImage, depthImageSize: CGSize) -> UIImage? {
+        guard let cgImage = maskImage.cgImage else { return maskImage }
+        
+        let width = cgImage.width
+        let height = cgImage.height
+        
+        // Extract mask data
+        var maskData = [UInt8](repeating: 0, count: width * height * 4)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let context = CGContext(
+            data: &maskData,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )
+        context?.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        
+        // Create binary mask array for easier processing
+        var binaryMask = [Bool](repeating: false, count: width * height)
+        for i in 0..<(width * height) {
+            let pixelIndex = i * 4
+            let red = maskData[pixelIndex]
+            binaryMask[i] = red > 128 // Threshold for mask inclusion
+        }
+        
+        // Apply morphological dilation to expand mask
+        let dilationRadius = max(2, min(width, height) / 100) // Adaptive radius based on image size
+        var expandedMask = binaryMask
+        
+        for _ in 0..<dilationRadius {
+            var newMask = expandedMask
+            
+            for y in 0..<height {
+                for x in 0..<width {
+                    let index = y * width + x
+                    
+                    if !expandedMask[index] {
+                        // Check 8-connected neighbors
+                        var hasNeighbor = false
+                        for dy in -1...1 {
+                            for dx in -1...1 {
+                                if dx == 0 && dy == 0 { continue }
+                                
+                                let nx = x + dx
+                                let ny = y + dy
+                                
+                                if nx >= 0 && nx < width && ny >= 0 && ny < height {
+                                    let neighborIndex = ny * width + nx
+                                    if expandedMask[neighborIndex] {
+                                        hasNeighbor = true
+                                        break
+                                    }
+                                }
+                            }
+                            if hasNeighbor { break }
+                        }
+                        
+                        if hasNeighbor {
+                            newMask[index] = true
+                        }
+                    }
+                }
+            }
+            expandedMask = newMask
+        }
+        
+        // Convert back to image
+        var expandedMaskData = [UInt8](repeating: 0, count: width * height * 4)
+        for i in 0..<(width * height) {
+            let pixelIndex = i * 4
+            if expandedMask[i] {
+                expandedMaskData[pixelIndex] = 139     // R - brown
+                expandedMaskData[pixelIndex + 1] = 69  // G - brown
+                expandedMaskData[pixelIndex + 2] = 19  // B - brown
+                expandedMaskData[pixelIndex + 3] = 255 // A - opaque
+            } else {
+                expandedMaskData[pixelIndex + 3] = 0   // A - transparent
+            }
+        }
+        
+        guard let expandedContext = CGContext(
+            data: &expandedMaskData,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let expandedCGImage = expandedContext.makeImage() else {
+            return maskImage
+        }
+        
+        return UIImage(cgImage: expandedCGImage)
+    }
 
     // MARK: - Depth Data Delegate
     func depthDataOutput(_ output: AVCaptureDepthDataOutput, didOutput depthData: AVDepthData, timestamp: CMTime, connection: AVCaptureConnection) {
@@ -861,12 +960,18 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
     
     // MARK: - Mask-based Cropping Function (Add this to CameraManager.swift)
     func cropDepthDataWithMask(_ maskImage: UIImage, imageFrame: CGRect, depthImageSize: CGSize) {
+        // Expand mask to include object sides
+        guard let expandedMask = expandMaskFor3DObject(maskImage, depthImageSize: depthImageSize) else {
+            presentError("Failed to expand mask for 3D object.")
+            return
+        }
+        
         if !uploadedCSVData.isEmpty {
-            // Handle uploaded CSV cropping with mask
-            cropUploadedCSVWithMask(maskImage, imageFrame: imageFrame, depthImageSize: depthImageSize)
+            // Handle uploaded CSV cropping with expanded mask
+            cropUploadedCSVWithMask(expandedMask, imageFrame: imageFrame, depthImageSize: depthImageSize)
         } else if let depthData = rawDepthData {
-            // Handle camera-captured depth data cropping with mask
-            saveDepthDataToFileWithMask(depthData: depthData, maskImage: maskImage, imageFrame: imageFrame, depthImageSize: depthImageSize)
+            // Handle camera-captured depth data cropping with expanded mask
+            saveDepthDataToFileWithMask(depthData: depthData, maskImage: expandedMask, imageFrame: imageFrame, depthImageSize: depthImageSize)
         } else {
             presentError("No depth data available for cropping.")
             return
