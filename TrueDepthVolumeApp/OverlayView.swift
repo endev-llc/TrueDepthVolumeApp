@@ -9,7 +9,7 @@
 import SwiftUI
 import UIKit
 
-// MARK: - Enhanced Overlay View with Drawing
+// MARK: - Enhanced Overlay View with Auto-Segmentation
 struct OverlayView: View {
     let depthImage: UIImage
     let photo: UIImage? // Made optional for uploaded CSV files
@@ -23,6 +23,15 @@ struct OverlayView: View {
     @State private var drawnPath: [CGPoint] = []
     @State private var isDrawing = false
     @State private var imageFrame: CGRect = .zero
+    
+    // MobileSAM integration
+    @StateObject private var samManager = MobileSAMManager()
+    @State private var isAutoSegmentMode = false
+    @State private var maskImage: UIImage?
+    @State private var tapLocation: CGPoint = .zero
+    @State private var imageDisplaySize: CGSize = .zero
+    @State private var isImageEncoded = false
+    @State private var showConfirmButton = false
     
     var body: some View {
         ZStack {
@@ -39,7 +48,7 @@ struct OverlayView: View {
                     
                     Spacer()
                     
-                    if !isDrawingMode {
+                    if !isDrawingMode && !isAutoSegmentMode {
                         // Only show depth/photo toggle if photo exists
                         if photo != nil {
                             Button(showingDepthOnly ? "Show Both" : "Depth Only") {
@@ -49,13 +58,19 @@ struct OverlayView: View {
                             .padding()
                         }
                         
+                        Button("Auto-Segment") {
+                            startAutoSegmentation()
+                        }
+                        .foregroundColor(.cyan)
+                        .padding()
+                        
                         Button("Draw Outline") {
                             isDrawingMode = true
                             drawnPath = []
                         }
-                        .foregroundColor(.cyan)
+                        .foregroundColor(.orange)
                         .padding()
-                    } else {
+                    } else if isDrawingMode {
                         Button("Clear") {
                             drawnPath = []
                             isDrawing = false
@@ -75,6 +90,21 @@ struct OverlayView: View {
                             Button("Confirm") {
                                 cropCSVWithOutline()
                                 isDrawingMode = false
+                            }
+                            .foregroundColor(.green)
+                            .padding()
+                        }
+                    } else if isAutoSegmentMode {
+                        Button("Cancel") {
+                            cancelAutoSegmentation()
+                        }
+                        .foregroundColor(.white)
+                        .padding()
+                        
+                        if showConfirmButton {
+                            Button("Confirm") {
+                                cropCSVWithMask()
+                                cancelAutoSegmentation()
                             }
                             .foregroundColor(.green)
                             .padding()
@@ -135,14 +165,30 @@ struct OverlayView: View {
                                 .opacity(photoOpacity)
                         }
                         
-                        // Always include DrawingOverlay to maintain consistent positioning
+                        // MobileSAM mask overlay (only in auto-segment mode)
+                        if isAutoSegmentMode, let mask = maskImage {
+                            Image(uiImage: mask)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                        }
+                        
+                        // Tap indicator for auto-segmentation
+                        if isAutoSegmentMode && tapLocation != .zero {
+                            Circle()
+                                .fill(Color.red)
+                                .frame(width: 12, height: 12)
+                                .position(tapLocation)
+                                .animation(.easeInOut(duration: 0.3), value: tapLocation)
+                        }
+                        
+                        // Always include DrawingOverlay to maintain consistent positioning (only active in drawing mode)
                         DrawingOverlay(
                             path: $drawnPath,
                             isDrawing: $isDrawing,
                             frameSize: geometry.size,
                             imageFrame: imageFrame
                         )
-                        .id(drawingId) // Add this line
+                        .id(drawingId)
                         .allowsHitTesting(isDrawingMode)
                         .opacity(isDrawingMode ? 1.0 : 0.0)
                         
@@ -159,23 +205,173 @@ struct OverlayView: View {
                             .stroke(Color.cyan, lineWidth: 3)
                         }
                     }
+                    .contentShape(Rectangle())
+                    .onTapGesture { location in
+                        if isAutoSegmentMode {
+                            handleAutoSegmentTap(at: location, geometry: geometry)
+                        }
+                    }
                 }
                 .padding()
                 
                 Spacer()
                 
                 // Info text
-                Text(isDrawingMode ?
-                     "Draw around the object you want to isolate. Tap 'Confirm' when done." :
-                     "Align the images to ensure depth data matches visual features")
+                Text(getInstructionText())
                     .foregroundColor(.white)
                     .font(.caption)
                     .multilineTextAlignment(.center)
                     .padding()
+                
+                // Loading overlay for MobileSAM
+                if samManager.isLoading {
+                    loadingOverlay
+                }
+                
+                // Error message for MobileSAM
+                if let errorMessage = samManager.errorMessage {
+                    errorMessageView(errorMessage)
+                }
+            }
+        }
+        .onAppear {
+            setupImageDisplaySize()
+        }
+    }
+    
+    // MARK: - Helper Views
+    private var loadingOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.7)
+                .ignoresSafeArea()
+            
+            VStack(spacing: 20) {
+                ProgressView()
+                    .scaleEffect(1.5)
+                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                
+                Text(isImageEncoded ? "Generating mask..." : "Encoding image...")
+                    .foregroundColor(.white)
+                    .font(.headline)
+            }
+            .padding()
+            .background(Color.black.opacity(0.8))
+            .cornerRadius(12)
+        }
+    }
+    
+    private func errorMessageView(_ message: String) -> some View {
+        VStack {
+            Spacer()
+            
+            HStack {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundColor(.red)
+                
+                Text(message)
+                    .foregroundColor(.white)
+                    .font(.body)
+            }
+            .padding()
+            .background(Color.red.opacity(0.2))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.red, lineWidth: 1)
+            )
+            .cornerRadius(8)
+            .padding()
+        }
+    }
+    
+    // MARK: - Helper Functions
+    private func getInstructionText() -> String {
+        if isDrawingMode {
+            return "Draw around the object you want to isolate. Tap 'Confirm' when done."
+        } else if isAutoSegmentMode {
+            if !isImageEncoded {
+                return "Encoding image for AI segmentation..."
+            } else if maskImage == nil {
+                return "Tap anywhere on the object you want to segment."
+            } else {
+                return "AI mask applied! Tap 'Confirm' to crop depth data to this object."
+            }
+        } else {
+            return "Choose 'Auto-Segment' for AI-powered segmentation or 'Draw Outline' for manual selection."
+        }
+    }
+    
+    private func setupImageDisplaySize() {
+        // Calculate the display size based on the image frame
+        let imageAspectRatio = depthImage.size.width / depthImage.size.height
+        // This will be updated when the geometry reader calculates the actual frame
+        imageDisplaySize = CGSize(width: imageFrame.width, height: imageFrame.height)
+    }
+    
+    // MARK: - Auto-Segmentation Functions
+    private func startAutoSegmentation() {
+        isAutoSegmentMode = true
+        maskImage = nil
+        tapLocation = .zero
+        showConfirmButton = false
+        isImageEncoded = false
+        
+        let imageToSegment = depthImage
+        
+        Task {
+            let success = await samManager.encodeImage(imageToSegment)
+            await MainActor.run {
+                isImageEncoded = success
+                if !success {
+                    // If encoding failed, exit auto-segment mode
+                    cancelAutoSegmentation()
+                }
             }
         }
     }
     
+    private func cancelAutoSegmentation() {
+        isAutoSegmentMode = false
+        maskImage = nil
+        tapLocation = .zero
+        showConfirmButton = false
+        isImageEncoded = false
+        samManager.currentImageEmbeddings = nil
+    }
+    
+    private func handleAutoSegmentTap(at location: CGPoint, geometry: GeometryProxy) {
+        guard isImageEncoded && !samManager.isLoading && imageFrame.contains(location) else { return }
+        
+        // Store the absolute tap location for the red dot indicator
+        tapLocation = location
+        
+        // Convert to relative coordinates within the image
+        let relativeX = location.x - imageFrame.minX
+        let relativeY = location.y - imageFrame.minY
+        let relativeLocation = CGPoint(x: relativeX, y: relativeY)
+        
+        // Update imageDisplaySize based on current imageFrame
+        imageDisplaySize = CGSize(width: imageFrame.width, height: imageFrame.height)
+        
+        Task {
+            let mask = await samManager.generateMask(at: relativeLocation, in: imageDisplaySize)
+            await MainActor.run {
+                if let mask = mask {
+                    self.maskImage = mask
+                    self.showConfirmButton = true
+                }
+            }
+        }
+    }
+    
+    // MARK: - Mask-based Cropping Function (Updated for Multiple Disconnected Regions)
+    private func cropCSVWithMask() {
+        guard let maskImage = maskImage else { return }
+        
+        // Create a custom cropping function that checks each point directly against the mask
+        cameraManager.cropDepthDataWithMask(maskImage, imageFrame: imageFrame, depthImageSize: depthImage.size)
+    }
+    
+    // MARK: - Original Drawing-based Cropping Function (preserved)
     private func cropCSVWithOutline() {
         // Convert drawn path to depth data coordinates and crop CSV
         let imageSize = depthImage.size

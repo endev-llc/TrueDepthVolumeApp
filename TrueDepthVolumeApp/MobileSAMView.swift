@@ -108,8 +108,6 @@ struct MobileSAMView: View {
                         .aspectRatio(contentMode: .fit)
                         .frame(width: displaySize.width, height: displaySize.height)
                         .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
-                        .blendMode(.multiply)
-                        .opacity(0.7)
                         .onAppear {
                             print("Mask displayed - Display size: \(displaySize), Mask size: \(mask.size)")
                         }

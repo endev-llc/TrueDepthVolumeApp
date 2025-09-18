@@ -198,12 +198,14 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         let rotatedWidth = originalHeight  // Swap width and height like camera capture
         let rotatedHeight = originalWidth
         
-        // Find min/max depth for normalization
+        // Use percentile-based normalization for better contrast
         let depthValues = points.map { $0.depth }.filter { !$0.isNaN && !$0.isInfinite && $0 > 0 }
         guard !depthValues.isEmpty else { return nil }
         
-        let minDepth = depthValues.min()!
-        let maxDepth = depthValues.max()!
+        let sortedDepths = depthValues.sorted()
+        let percentile5 = sortedDepths[Int(Float(sortedDepths.count) * 0.05)]
+        let percentile95 = sortedDepths[Int(Float(sortedDepths.count) * 0.95)]
+        let depthRange = percentile95 - percentile5
         
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
@@ -237,9 +239,16 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
             
             guard x >= 0 && x < originalWidth && y >= 0 && y < originalHeight else { continue }
             
-            let normalizedDepth = (point.depth - minDepth) / (maxDepth - minDepth)
+            // Clamp to percentile range
+            let clampedDepth = max(percentile5, min(percentile95, point.depth))
+            let normalizedDepth = depthRange > 0 ? (clampedDepth - percentile5) / depthRange : 0
             let invertedDepth = 1.0 - normalizedDepth
-            let color = interpolateColor(colormap: jetColormap, t: invertedDepth)
+            
+            // Apply gamma correction for enhanced contrast
+            let gamma: Float = 0.5 // Lower gamma enhances contrast
+            let enhancedDepth = pow(invertedDepth, gamma)
+            
+            let color = interpolateColor(colormap: jetColormap, t: enhancedDepth)
             
             // Apply same rotation as camera capture: (x,y) -> (originalHeight-1-y, x)
             let rotatedX = originalHeight - 1 - y
@@ -537,21 +546,26 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         let floatBuffer = CVPixelBufferGetBaseAddress(depthMap)!.bindMemory(to: Float32.self, capacity: originalWidth * originalHeight)
         let bytesPerRow = CVPixelBufferGetBytesPerRow(depthMap)
         
-        // Find min/max depth for normalization
-        var minDepth: Float = Float.infinity
-        var maxDepth: Float = -Float.infinity
-        
+        // Collect all valid depth values for percentile-based normalization
+        var validDepths: [Float] = []
         for y in 0..<originalHeight {
             for x in 0..<originalWidth {
                 let pixelIndex = y * (bytesPerRow / MemoryLayout<Float32>.stride) + x
                 let depthValue = floatBuffer[pixelIndex]
                 
                 if !depthValue.isNaN && !depthValue.isInfinite && depthValue > 0 {
-                    minDepth = min(minDepth, depthValue)
-                    maxDepth = max(maxDepth, depthValue)
+                    validDepths.append(depthValue)
                 }
             }
         }
+        
+        guard !validDepths.isEmpty else { return nil }
+        
+        // Use percentile-based normalization for better contrast
+        validDepths.sort()
+        let percentile5 = validDepths[Int(Float(validDepths.count) * 0.05)]
+        let percentile95 = validDepths[Int(Float(validDepths.count) * 0.95)]
+        let depthRange = percentile95 - percentile5
         
         // Create CGImage with rotated dimensions (90° clockwise rotation)
         let rotatedWidth = originalHeight  // Swap width and height
@@ -585,10 +599,17 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
                 
                 var color: [Float] = [0, 0, 0] // Default black
                 
-                if !depthValue.isNaN && !depthValue.isInfinite && depthValue > 0 && minDepth != maxDepth {
-                    let normalizedDepth = (depthValue - minDepth) / (maxDepth - minDepth)
+                if !depthValue.isNaN && !depthValue.isInfinite && depthValue > 0 && depthRange > 0 {
+                    // Clamp to percentile range
+                    let clampedDepth = max(percentile5, min(percentile95, depthValue))
+                    let normalizedDepth = (clampedDepth - percentile5) / depthRange
                     let invertedDepth = 1.0 - normalizedDepth // Closer = hot, farther = cool
-                    color = interpolateColor(colormap: jetColormap, t: invertedDepth)
+                    
+                    // Apply gamma correction for enhanced contrast
+                    let gamma: Float = 0.5 // Lower gamma enhances contrast
+                    let enhancedDepth = pow(invertedDepth, gamma)
+                    
+                    color = interpolateColor(colormap: jetColormap, t: enhancedDepth)
                 }
                 
                 // Rotate 90° counterclockwise: (x,y) -> (originalHeight-1-y, x)
@@ -836,5 +857,245 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         let denominator = sqrt(dx * dx + dy * dy)
         
         return numerator / denominator
+    }
+    
+    // MARK: - Mask-based Cropping Function (Add this to CameraManager.swift)
+    func cropDepthDataWithMask(_ maskImage: UIImage, imageFrame: CGRect, depthImageSize: CGSize) {
+        if !uploadedCSVData.isEmpty {
+            // Handle uploaded CSV cropping with mask
+            cropUploadedCSVWithMask(maskImage, imageFrame: imageFrame, depthImageSize: depthImageSize)
+        } else if let depthData = rawDepthData {
+            // Handle camera-captured depth data cropping with mask
+            saveDepthDataToFileWithMask(depthData: depthData, maskImage: maskImage, imageFrame: imageFrame, depthImageSize: depthImageSize)
+        } else {
+            presentError("No depth data available for cropping.")
+            return
+        }
+        
+        DispatchQueue.main.async {
+            self.hasOutline = true
+        }
+    }
+
+    private func cropUploadedCSVWithMask(_ maskImage: UIImage, imageFrame: CGRect, depthImageSize: CGSize) {
+        guard !uploadedCSVData.isEmpty else { return }
+        
+        // Show processing indicator
+        DispatchQueue.main.async {
+            self.isProcessing = true
+        }
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            let timestamp = Int(Date().timeIntervalSince1970)
+            let fileName = "depth_data_masked_\(timestamp).csv"
+            
+            guard let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+                DispatchQueue.main.async {
+                    self.presentError("Could not access Documents directory.")
+                    self.isProcessing = false
+                }
+                return
+            }
+            
+            let fileURL = documentsDirectory.appendingPathComponent(fileName)
+            
+            do {
+                var csvLines: [String] = []
+                csvLines.append("x,y,depth_meters")
+                
+                // Preserve camera intrinsics from original file
+                if let originalFileURL = self.fileToShare {
+                    let originalContent = try String(contentsOf: originalFileURL)
+                    let originalLines = originalContent.components(separatedBy: .newlines)
+                    
+                    for line in originalLines {
+                        if line.hasPrefix("#") {
+                            csvLines.append(line)
+                        }
+                    }
+                }
+                
+                csvLines.append("# Cropped using AI mask segmentation")
+                
+                var croppedPixelCount = 0
+                let maskPixelData = self.extractMaskPixelData(from: maskImage)
+                
+                // Get original data dimensions
+                let originalMaxX = Int(ceil(self.uploadedCSVData.map { $0.x }.max() ?? 0))
+                let originalMaxY = Int(ceil(self.uploadedCSVData.map { $0.y }.max() ?? 0))
+                let originalWidth = originalMaxX + 1
+                let originalHeight = originalMaxY + 1
+                
+                print("Processing \(self.uploadedCSVData.count) points with mask...")
+                
+                for point in self.uploadedCSVData {
+                    let x = Int(point.x)
+                    let y = Int(point.y)
+                    
+                    // Transform to display coordinates (same rotation as camera capture)
+                    let displayX = originalHeight - 1 - y
+                    let displayY = x
+                    
+                    // Check if this point falls within any mask region
+                    if self.isPointInMask(displayX: displayX, displayY: displayY,
+                                       originalWidth: originalWidth, originalHeight: originalHeight,
+                                       maskPixelData: maskPixelData, maskImage: maskImage) {
+                        csvLines.append("\(point.x),\(point.y),\(String(format: "%.6f", point.depth))")
+                        croppedPixelCount += 1
+                    }
+                }
+                
+                let csvContent = csvLines.joined(separator: "\n")
+                try csvContent.write(to: fileURL, atomically: true, encoding: .utf8)
+                
+                print("Successfully cropped \(croppedPixelCount) points from \(self.uploadedCSVData.count) total points using AI mask")
+                
+                DispatchQueue.main.async {
+                    self.lastSavedFileName = fileName
+                    self.croppedFileToShare = fileURL
+                    self.isProcessing = false
+                }
+                
+            } catch {
+                DispatchQueue.main.async {
+                    self.presentError("Failed to save masked CSV: \(error.localizedDescription)")
+                    self.isProcessing = false
+                }
+            }
+        }
+    }
+
+    private func saveDepthDataToFileWithMask(depthData: AVDepthData, maskImage: UIImage, imageFrame: CGRect, depthImageSize: CGSize) {
+        let processedDepthData: AVDepthData
+        
+        if depthData.depthDataType == kCVPixelFormatType_DisparityFloat16 ||
+           depthData.depthDataType == kCVPixelFormatType_DisparityFloat32 {
+            do {
+                processedDepthData = try depthData.converting(toDepthDataType: kCVPixelFormatType_DepthFloat32)
+            } catch {
+                self.presentError("Failed to convert disparity to depth: \(error.localizedDescription)")
+                return
+            }
+        } else {
+            do {
+                processedDepthData = try depthData.converting(toDepthDataType: kCVPixelFormatType_DepthFloat32)
+            } catch {
+                self.presentError("Failed to convert depth data format: \(error.localizedDescription)")
+                return
+            }
+        }
+        
+        let depthMap = processedDepthData.depthDataMap
+        CVPixelBufferLockBaseAddress(depthMap, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(depthMap, .readOnly) }
+        
+        let width = CVPixelBufferGetWidth(depthMap)
+        let height = CVPixelBufferGetHeight(depthMap)
+        let floatBuffer = CVPixelBufferGetBaseAddress(depthMap)!.bindMemory(to: Float32.self, capacity: width * height)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(depthMap)
+        let timestamp = Int(Date().timeIntervalSince1970)
+        let fileName = "depth_data_masked_\(timestamp).csv"
+        
+        guard let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            self.presentError("Could not access Documents directory.")
+            return
+        }
+        
+        let fileURL = documentsDirectory.appendingPathComponent(fileName)
+        
+        do {
+            var csvLines: [String] = []
+            csvLines.append("x,y,depth_meters")
+            
+            if let calibrationData = self.cameraCalibrationData {
+                let intrinsics = calibrationData.intrinsicMatrix
+                csvLines.append("# Camera Intrinsics: fx=\(intrinsics.columns.0.x), fy=\(intrinsics.columns.1.y), cx=\(intrinsics.columns.2.x), cy=\(intrinsics.columns.2.y)")
+                let dimensions = calibrationData.intrinsicMatrixReferenceDimensions
+                csvLines.append("# Reference Dimensions: width=\(dimensions.width), height=\(dimensions.height)")
+            }
+            
+            csvLines.append("# Cropped using AI mask segmentation")
+            
+            var croppedPixelCount = 0
+            let maskPixelData = extractMaskPixelData(from: maskImage)
+            
+            for y in 0..<height {
+                for x in 0..<width {
+                    let pixelIndex = y * (bytesPerRow / MemoryLayout<Float32>.stride) + x
+                    let depthValue = floatBuffer[pixelIndex]
+                    
+                    // Transform to display coordinates
+                    let displayX = height - 1 - y
+                    let displayY = x
+                    
+                    // Check if this point falls within any mask region
+                    if isPointInMask(displayX: displayX, displayY: displayY,
+                                   originalWidth: width, originalHeight: height,
+                                   maskPixelData: maskPixelData, maskImage: maskImage) {
+                        csvLines.append("\(x),\(y),\(String(format: "%.6f", depthValue))")
+                        croppedPixelCount += 1
+                    }
+                }
+            }
+            
+            let csvContent = csvLines.joined(separator: "\n")
+            try csvContent.write(to: fileURL, atomically: true, encoding: .utf8)
+            
+            print("Successfully cropped \(croppedPixelCount) points using AI mask")
+            
+            DispatchQueue.main.async {
+                self.lastSavedFileName = fileName
+                self.croppedFileToShare = fileURL
+            }
+            
+        } catch {
+            self.presentError("Failed to save masked depth data: \(error.localizedDescription)")
+        }
+    }
+
+    private func extractMaskPixelData(from maskImage: UIImage) -> [UInt8] {
+        guard let cgImage = maskImage.cgImage else { return [] }
+        
+        let width = cgImage.width
+        let height = cgImage.height
+        
+        var pixelData = [UInt8](repeating: 0, count: width * height * 4)
+        
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let context = CGContext(
+            data: &pixelData,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )
+        
+        context?.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        
+        return pixelData
+    }
+
+    private func isPointInMask(displayX: Int, displayY: Int, originalWidth: Int, originalHeight: Int,
+                              maskPixelData: [UInt8], maskImage: UIImage) -> Bool {
+        guard let cgImage = maskImage.cgImage else { return false }
+        
+        let maskWidth = cgImage.width
+        let maskHeight = cgImage.height
+        
+        // Convert display coordinates to mask image coordinates
+        let maskX = Int((Float(displayX) / Float(originalHeight)) * Float(maskWidth))
+        let maskY = Int((Float(displayY) / Float(originalWidth)) * Float(maskHeight))
+        
+        // Check bounds
+        guard maskX >= 0 && maskX < maskWidth && maskY >= 0 && maskY < maskHeight else { return false }
+        
+        // Check if the mask pixel at this location is above threshold
+        let pixelIndex = (maskY * maskWidth + maskX) * 4
+        guard pixelIndex < maskPixelData.count else { return false }
+        
+        let red = maskPixelData[pixelIndex]
+        return red > 128 // Threshold for mask inclusion
     }
 }

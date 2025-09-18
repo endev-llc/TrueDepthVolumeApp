@@ -345,12 +345,19 @@ class MobileSAMManager: ObservableObject {
         for y in 0..<height {
             for x in 0..<width {
                 let index = maskStartIndex + y * width + x
-                let maskValue: UInt8 = index < floatArray.count && floatArray[index] > 0.0 ? 255 : 0
+                let isMask = index < floatArray.count && floatArray[index] > 0.0
                 
-                pixelData.append(maskValue)  // R
-                pixelData.append(UInt8(0))   // G
-                pixelData.append(UInt8(0))   // B
-                pixelData.append(maskValue)  // A
+                if isMask {
+                    pixelData.append(139)  // R - brown
+                    pixelData.append(69)   // G - brown
+                    pixelData.append(19)   // B - brown
+                    pixelData.append(255)  // A - opaque for mask
+                } else {
+                    pixelData.append(0)    // R - doesn't matter
+                    pixelData.append(0)    // G - doesn't matter
+                    pixelData.append(0)    // B - doesn't matter
+                    pixelData.append(0)    // A - transparent for background
+                }
             }
         }
         
