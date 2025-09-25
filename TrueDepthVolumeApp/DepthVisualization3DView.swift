@@ -13,6 +13,9 @@ import SceneKit
 struct DepthVisualization3DView: View {
     let csvFileURL: URL
     let onDismiss: () -> Void
+    var refinementMask: UIImage? = nil
+    var refinementImageFrame: CGRect = .zero
+    var refinementDepthImageSize: CGSize = .zero
     
     @State private var isLoading = true
     @State private var errorMessage: String?
@@ -23,6 +26,8 @@ struct DepthVisualization3DView: View {
     @State private var cameraIntrinsics: CameraIntrinsics? = nil
     @State private var showVoxels: Bool = true
     @State private var voxelNode: SCNNode?
+    @State private var originalVoxelData: (filledVoxels: Set<String>, min: SCNVector3, max: SCNVector3, voxelSize: Float)?
+    @State private var originalDepthPoints: [DepthPoint] = []
     
     var body: some View {
         ZStack {
@@ -47,7 +52,7 @@ struct DepthVisualization3DView: View {
                         
                         if voxelCount > 0 {
                             VStack(spacing: 4) {
-                                Text("Volume: \(String(format: "%.2f", totalVolume * 1_000_000)) cm³") // calibration factor would go here
+                                Text("Volume: \(String(format: "%.2f", totalVolume * 1_000_000)) cm^3")
                                     .foregroundColor(.cyan)
                                     .font(.subheadline)
                                     .fontWeight(.semibold)
@@ -172,9 +177,9 @@ struct DepthVisualization3DView: View {
         }
         
         if let intrinsics = cameraIntrinsics {
-            print("🎯 Loaded camera intrinsics from CSV: fx=\(intrinsics.fx), fy=\(intrinsics.fy)")
+            print("TARGET: Loaded camera intrinsics from CSV: fx=\(intrinsics.fx), fy=\(intrinsics.fy)")
         } else {
-            print("⚠️ No camera intrinsics found in CSV")
+            print("WARNING: No camera intrinsics found in CSV")
         }
         
         // Skip header and comment lines
@@ -198,7 +203,7 @@ struct DepthVisualization3DView: View {
             }
         }
         
-        print("📊 Parsed \(points.count) valid depth points from CSV")
+        print("DATA: Parsed \(points.count) valid depth points from CSV")
         return points
     }
     
@@ -255,6 +260,9 @@ struct DepthVisualization3DView: View {
     
     private func create3DScene(from points: [DepthPoint]) -> SCNScene {
         let scene = SCNScene()
+        
+        // Store original depth points for refinement coordinate mapping
+        self.originalDepthPoints = points
         
         // Convert 2D depth data to 3D coordinates using camera intrinsics (if available)
         let measurementPoints3D = convertDepthPointsTo3D(points)
@@ -516,24 +524,165 @@ struct DepthVisualization3DView: View {
         // Include surface voxels
         filledVoxels.formUnion(surfaceVoxels)
         
-        guard !filledVoxels.isEmpty else {
+        // Store original voxel data for refinement
+        DispatchQueue.main.async {
+            self.originalVoxelData = (filledVoxels: filledVoxels, min: min, max: max, voxelSize: voxelSize)
+        }
+        
+        // Apply refinement mask if provided
+        let finalVoxels = applyRefinementMask(to: filledVoxels, min: min, max: max, voxelSize: voxelSize)
+        
+        guard !finalVoxels.isEmpty else {
             return (SCNGeometry(), VoxelVolumeInfo(totalVolume: 0.0, voxelCount: 0, voxelSize: 0.0))
         }
         
-        print("Generated \(filledVoxels.count) voxel cubes")
+        print("Final voxel count after refinement: \(finalVoxels.count)")
         
         // Calculate total volume using MEASUREMENT coordinates (accurate)
         let singleVoxelVolume = Double(voxelSize * voxelSize * voxelSize) // in cubic meters
-        let totalVolumeM3 = Double(filledVoxels.count) * singleVoxelVolume
+        let totalVolumeM3 = Double(finalVoxels.count) * singleVoxelVolume
         
-        print("Accurate Total Volume: \(totalVolumeM3 * 1_000_000) cm³")
+        print("Refined Total Volume: \(totalVolumeM3 * 1_000_000) cm^3")
         
         // Create volume info
         let volumeInfo = VoxelVolumeInfo(
             totalVolume: totalVolumeM3,
-            voxelCount: filledVoxels.count,
+            voxelCount: finalVoxels.count,
             voxelSize: voxelSize
         )
+        
+        // Create geometry using the refined voxels
+        return (createVoxelGeometry(from: finalVoxels, min: min, max: max, voxelSize: voxelSize), volumeInfo)
+    }
+    
+    // MARK: - FIXED: Refinement Mask Application with Correct Coordinate Mapping
+    private func applyRefinementMask(to voxels: Set<String>, min: SCNVector3, max: SCNVector3, voxelSize: Float) -> Set<String> {
+        guard let refinementMask = refinementMask else {
+            return voxels // No refinement, return all voxels
+        }
+        
+        print("REFINEMENT: Filtering \(voxels.count) voxels with visual mask")
+        
+        // Extract mask pixel data
+        let maskPixelData = extractMaskPixelData(from: refinementMask)
+        
+        // Get original data dimensions from stored depth points
+        let originalMaxX = Int(ceil(originalDepthPoints.map { $0.x }.max() ?? 0))
+        let originalMaxY = Int(ceil(originalDepthPoints.map { $0.y }.max() ?? 0))
+        let originalWidth = originalMaxX + 1
+        let originalHeight = originalMaxY + 1
+        
+        print("REFINEMENT: Original data dimensions: \(originalWidth) x \(originalHeight)")
+        print("REFINEMENT: Mask dimensions: \(refinementMask.size)")
+        
+        var refinedVoxels = Set<String>()
+        
+        for voxelKey in voxels {
+            let components = voxelKey.split(separator: ",")
+            let vx = Int(components[0])!
+            let vy = Int(components[1])!
+            let vz = Int(components[2])!
+            
+            // Calculate voxel center in measurement space
+            let centerX = min.x + (Float(vx) + 0.5) * voxelSize
+            let centerY = min.y + (Float(vy) + 0.5) * voxelSize
+            let centerZ = min.z + (Float(vz) + 0.5) * voxelSize
+            
+            // FIXED: Use a more direct approach - sample multiple points within each voxel
+            // and check if ANY of them fall within the mask
+            var isVoxelInMask = false
+            
+            // Sample 5x5 grid within the voxel for better accuracy
+            for dx in 0..<5 {
+                for dy in 0..<5 {
+                    let sampleX = centerX + (Float(dx) - 2.0) * voxelSize * 0.2
+                    let sampleY = centerY + (Float(dy) - 2.0) * voxelSize * 0.2
+                    
+                    if isVoxelSampleInMask(sampleX: sampleX, sampleY: sampleY,
+                                         min: min, max: max,
+                                         originalWidth: originalWidth, originalHeight: originalHeight,
+                                         maskPixelData: maskPixelData, maskImage: refinementMask) {
+                        isVoxelInMask = true
+                        break
+                    }
+                }
+                if isVoxelInMask { break }
+            }
+            
+            if isVoxelInMask {
+                refinedVoxels.insert(voxelKey)
+            }
+        }
+        
+        print("REFINEMENT: Kept \(refinedVoxels.count) voxels after mask filtering")
+        return refinedVoxels
+    }
+    
+    private func isVoxelSampleInMask(sampleX: Float, sampleY: Float, min: SCNVector3, max: SCNVector3,
+                                   originalWidth: Int, originalHeight: Int,
+                                   maskPixelData: [UInt8], maskImage: UIImage) -> Bool {
+        guard let cgImage = maskImage.cgImage else { return false }
+        
+        let maskWidth = cgImage.width
+        let maskHeight = cgImage.height
+        
+        // Convert 3D measurement coordinates back to original pixel coordinates
+        // This reverses the 3D conversion process used in convertDepthPointsTo3D
+        
+        // STEP 1: Convert from measurement space to normalized coordinates
+        let normalizedX = (sampleX - min.x) / (max.x - min.x)
+        let normalizedY = (sampleY - min.y) / (max.y - min.y)
+        
+        // STEP 2: Map to original pixel coordinates
+        let pixelX = normalizedX * Float(originalWidth)
+        let pixelY = normalizedY * Float(originalHeight)
+        
+        // STEP 3: Apply the same rotation transformation used in original data processing
+        // Original: (x,y) -> (originalHeight-1-y, x) for display coordinates
+        let displayX = Int(Float(originalHeight - 1) - pixelY)
+        let displayY = Int(pixelX)
+        
+        // STEP 4: Convert display coordinates to mask coordinates
+        let maskX = Int((Float(displayX) / Float(originalHeight)) * Float(maskWidth))
+        let maskY = Int((Float(displayY) / Float(originalWidth)) * Float(maskHeight))
+        
+        // Check bounds
+        guard maskX >= 0 && maskX < maskWidth && maskY >= 0 && maskY < maskHeight else { return false }
+        
+        // Check if the mask pixel at this location is above threshold
+        let pixelIndex = (maskY * maskWidth + maskX) * 4
+        guard pixelIndex < maskPixelData.count else { return false }
+        
+        let red = maskPixelData[pixelIndex]
+        return red > 128 // Threshold for mask inclusion
+    }
+    
+    private func extractMaskPixelData(from maskImage: UIImage) -> [UInt8] {
+        guard let cgImage = maskImage.cgImage else { return [] }
+        
+        let width = cgImage.width
+        let height = cgImage.height
+        
+        var pixelData = [UInt8](repeating: 0, count: width * height * 4)
+        
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let context = CGContext(
+            data: &pixelData,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )
+        
+        context?.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        
+        return pixelData
+    }
+    
+    private func createVoxelGeometry(from voxels: Set<String>, min: SCNVector3, max: SCNVector3, voxelSize: Float) -> SCNGeometry {
+        guard !voxels.isEmpty else { return SCNGeometry() }
         
         // Create geometry using MEASUREMENT coordinates for consistent positioning
         var voxelVertices: [SCNVector3] = []
@@ -541,7 +690,7 @@ struct DepthVisualization3DView: View {
         
         let halfSize = voxelSize * 0.5
         
-        for voxelKey in filledVoxels {
+        for voxelKey in voxels {
             let components = voxelKey.split(separator: ",")
             let vx = Int(components[0])!
             let vy = Int(components[1])!
@@ -636,7 +785,7 @@ struct DepthVisualization3DView: View {
         material.transparency = 0.7
         geometry.materials = [material]
         
-        return (geometry, volumeInfo)
+        return geometry
     }
     
     private func convexHull2D(_ points: [(x: Int, y: Int)]) -> [(x: Int, y: Int)] {

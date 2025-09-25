@@ -19,6 +19,8 @@ struct TrueDepthCameraView: View {
     @State private var showOverlayView = false
     @State private var uploadedCSVFile: URL?
     @State private var showDocumentPicker = false
+    @State private var showRefinementView = false
+    @State private var primaryCroppedCSV: URL?
 
     var body: some View {
         NavigationView {
@@ -102,6 +104,8 @@ struct TrueDepthCameraView: View {
                     if uploadedCSVFile != nil || cameraManager.croppedFileToShare != nil {
                         Button(action: {
                             cameraManager.show3DView = true
+                            // Store the primary cropped CSV for potential refinement
+                            primaryCroppedCSV = cameraManager.croppedFileToShare
                         }) {
                             Text("View 3D")
                                 .font(.headline)
@@ -109,6 +113,21 @@ struct TrueDepthCameraView: View {
                                 .foregroundColor(.white)
                                 .padding()
                                 .background(Color.purple)
+                                .cornerRadius(15)
+                        }
+                    }
+                    
+                    // Add refinement button after 3D view button
+                    if primaryCroppedCSV != nil, let _ = cameraManager.croppedPhoto {
+                        Button(action: {
+                            showRefinementView = true
+                        }) {
+                            Text("Refine Contents")
+                                .font(.headline)
+                                .fontWeight(.bold)
+                                .foregroundColor(.white)
+                                .padding()
+                                .background(Color.green)
                                 .cornerRadius(15)
                         }
                     }
@@ -158,16 +177,39 @@ struct TrueDepthCameraView: View {
                 }
             }
             .fullScreenCover(isPresented: $cameraManager.show3DView) {
-                // Prioritize cropped file, then fall back to uploaded CSV
                 if let croppedFileURL = cameraManager.croppedFileToShare {
                     DepthVisualization3DView(
                         csvFileURL: croppedFileURL,
-                        onDismiss: { cameraManager.show3DView = false }
+                        onDismiss: {
+                            cameraManager.show3DView = false
+                            // Clear refinement data when dismissing
+                            cameraManager.refinementMask = nil
+                        },
+                        refinementMask: cameraManager.refinementMask,
+                        refinementImageFrame: cameraManager.refinementImageFrame,
+                        refinementDepthImageSize: cameraManager.refinementDepthImageSize
                     )
                 } else if let uploadedCSV = uploadedCSVFile {
                     DepthVisualization3DView(
                         csvFileURL: uploadedCSV,
                         onDismiss: { cameraManager.show3DView = false }
+                    )
+                }
+            }
+            .fullScreenCover(isPresented: $showRefinementView) {
+                if let croppedPhoto = cameraManager.croppedPhoto,
+                   let primaryCSV = primaryCroppedCSV {
+                    OverlayView(
+                        depthImage: croppedPhoto, // Use the cropped photo for refinement
+                        photo: croppedPhoto,
+                        cameraManager: cameraManager,
+                        onDismiss: { showRefinementView = false },
+                        isRefinementMode: true,
+                        primaryCroppedCSV: primaryCSV,
+                        onRefine: { mask, frame, size in
+                            cameraManager.refineWithSecondaryMask(mask, imageFrame: frame, depthImageSize: size, primaryCroppedCSV: primaryCSV)
+                            showRefinementView = false
+                        }
                     )
                 }
             }

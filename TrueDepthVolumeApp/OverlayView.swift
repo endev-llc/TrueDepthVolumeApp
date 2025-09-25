@@ -15,6 +15,10 @@ struct OverlayView: View {
     let photo: UIImage? // Made optional for uploaded CSV files
     let cameraManager: CameraManager
     let onDismiss: () -> Void
+    var isRefinementMode: Bool = false
+    var primaryCroppedCSV: URL? = nil
+    var onRefine: ((UIImage, CGRect, CGSize) -> Void)? = nil
+    
     @State private var drawingId = UUID()
     
     @State private var photoOpacity: Double = 0.7
@@ -49,8 +53,15 @@ struct OverlayView: View {
                     Spacer()
                     
                     if !isDrawingMode && !isAutoSegmentMode {
-                        // Only show depth/photo toggle if photo exists
-                        if photo != nil {
+                        // Show refinement option if we have a cropped photo and primary CSV
+                        if isRefinementMode, let _ = primaryCroppedCSV {
+                            Text("Tap food to refine")
+                                .foregroundColor(.yellow)
+                                .padding()
+                        }
+                        
+                        // Only show depth/photo toggle if photo exists and not in refinement mode
+                        if photo != nil && !isRefinementMode {
                             Button(showingDepthOnly ? "Show Both" : "Depth Only") {
                                 showingDepthOnly.toggle()
                             }
@@ -58,18 +69,26 @@ struct OverlayView: View {
                             .padding()
                         }
                         
-                        Button("Auto-Segment") {
-                            startAutoSegmentation()
+                        if !isRefinementMode {
+                            Button("Auto-Segment") {
+                                startAutoSegmentation()
+                            }
+                            .foregroundColor(.cyan)
+                            .padding()
+                            
+                            Button("Draw Outline") {
+                                isDrawingMode = true
+                                drawnPath = []
+                            }
+                            .foregroundColor(.orange)
+                            .padding()
+                        } else {
+                            Button("Auto-Segment Food") {
+                                startAutoSegmentation()
+                            }
+                            .foregroundColor(.green)
+                            .padding()
                         }
-                        .foregroundColor(.cyan)
-                        .padding()
-                        
-                        Button("Draw Outline") {
-                            isDrawingMode = true
-                            drawnPath = []
-                        }
-                        .foregroundColor(.orange)
-                        .padding()
                     } else if isDrawingMode {
                         Button("Clear") {
                             drawnPath = []
@@ -103,7 +122,11 @@ struct OverlayView: View {
                         
                         if showConfirmButton {
                             Button("Confirm") {
-                                cropCSVWithMask()
+                                if isRefinementMode {
+                                    applyRefinementMask()
+                                } else {
+                                    cropCSVWithMask()
+                                }
                                 cancelAutoSegmentation()
                             }
                             .foregroundColor(.green)
@@ -112,8 +135,8 @@ struct OverlayView: View {
                     }
                 }
                 
-                // Opacity slider (only show if photo exists and not depth only)
-                if !showingDepthOnly && photo != nil {
+                // Opacity slider (only show if photo exists and not depth only and not in refinement mode)
+                if !showingDepthOnly && photo != nil && !isRefinementMode {
                     HStack {
                         Text("Photo Opacity:")
                             .foregroundColor(.white)
@@ -139,26 +162,17 @@ struct OverlayView: View {
                                     Color.clear
                                         .onAppear {
                                             // Calculate the actual image frame within the GeometryReader
-                                            let imageAspectRatio = depthImage.size.width / depthImage.size.height
-                                            let containerAspectRatio = geometry.size.width / geometry.size.height
-                                            
-                                            if imageAspectRatio > containerAspectRatio {
-                                                // Image is wider - fit to width
-                                                let imageHeight = geometry.size.width / imageAspectRatio
-                                                let yOffset = (geometry.size.height - imageHeight) / 2
-                                                imageFrame = CGRect(x: 0, y: yOffset, width: geometry.size.width, height: imageHeight)
-                                            } else {
-                                                // Image is taller - fit to height
-                                                let imageWidth = geometry.size.height * imageAspectRatio
-                                                let xOffset = (geometry.size.width - imageWidth) / 2
-                                                imageFrame = CGRect(x: xOffset, y: 0, width: imageWidth, height: geometry.size.height)
-                                            }
+                                            updateImageFrame(containerSize: geometry.size)
+                                        }
+                                        .onChange(of: geometry.size) { _, newSize in
+                                            // Recalculate when container size changes (e.g., rotation)
+                                            updateImageFrame(containerSize: newSize)
                                         }
                                 }
                             )
                         
-                        // Photo (top layer with opacity) - only show if exists and not depth only
-                        if !showingDepthOnly, let photo = photo {
+                        // Photo (top layer with opacity) - only show if exists, not depth only, and not in refinement mode
+                        if !showingDepthOnly && !isRefinementMode, let photo = photo {
                             Image(uiImage: photo)
                                 .resizable()
                                 .aspectRatio(contentMode: .fit)
@@ -291,12 +305,42 @@ struct OverlayView: View {
             if !isImageEncoded {
                 return "Encoding image for AI segmentation..."
             } else if maskImage == nil {
-                return "Tap anywhere on the object you want to segment."
+                if isRefinementMode {
+                    return "Tap the food contents you want to isolate from the dish."
+                } else {
+                    return "Tap anywhere on the object you want to segment."
+                }
             } else {
-                return "AI mask applied! Tap 'Confirm' to crop depth data to this object."
+                if isRefinementMode {
+                    return "Food mask applied! Tap 'Confirm' to refine the 3D model."
+                } else {
+                    return "AI mask applied! Tap 'Confirm' to crop depth data to this object."
+                }
             }
         } else {
-            return "Choose 'Auto-Segment' for AI-powered segmentation or 'Draw Outline' for manual selection."
+            if isRefinementMode {
+                return "Tap 'Auto-Segment Food' to isolate just the food contents from the dish."
+            } else {
+                return "Choose 'Auto-Segment' for AI-powered segmentation or 'Draw Outline' for manual selection."
+            }
+        }
+    }
+    
+    // NEW: Helper function to update image frame (replaces inline calculation)
+    private func updateImageFrame(containerSize: CGSize) {
+        let imageAspectRatio = depthImage.size.width / depthImage.size.height
+        let containerAspectRatio = containerSize.width / containerSize.height
+        
+        if imageAspectRatio > containerAspectRatio {
+            // Image is wider - fit to width
+            let imageHeight = containerSize.width / imageAspectRatio
+            let yOffset = (containerSize.height - imageHeight) / 2
+            imageFrame = CGRect(x: 0, y: yOffset, width: containerSize.width, height: imageHeight)
+        } else {
+            // Image is taller - fit to height
+            let imageWidth = containerSize.height * imageAspectRatio
+            let xOffset = (containerSize.width - imageWidth) / 2
+            imageFrame = CGRect(x: xOffset, y: 0, width: imageWidth, height: containerSize.height)
         }
     }
     
@@ -315,7 +359,8 @@ struct OverlayView: View {
         showConfirmButton = false
         isImageEncoded = false
         
-        let imageToSegment = depthImage
+        // Use photo for refinement mode, depth image otherwise
+        let imageToSegment = isRefinementMode ? (photo ?? depthImage) : depthImage
         
         Task {
             let success = await samManager.encodeImage(imageToSegment)
@@ -369,6 +414,14 @@ struct OverlayView: View {
         
         // Create a custom cropping function that checks each point directly against the mask
         cameraManager.cropDepthDataWithMask(maskImage, imageFrame: imageFrame, depthImageSize: depthImage.size)
+    }
+    
+    // MARK: - Refinement Function
+    private func applyRefinementMask() {
+        guard let maskImage = maskImage,
+              let primaryCSV = primaryCroppedCSV else { return }
+        
+        onRefine?(maskImage, imageFrame, depthImage.size)
     }
     
     // MARK: - Original Drawing-based Cropping Function (preserved)

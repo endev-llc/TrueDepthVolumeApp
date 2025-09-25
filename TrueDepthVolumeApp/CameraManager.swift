@@ -29,6 +29,11 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
     @Published var croppedFileToShare: URL?
     @Published var hasOutline = false
     @Published var show3DView = false
+    @Published var croppedPhoto: UIImage?
+    @Published var refinementMask: UIImage?
+    @Published var refinementImageFrame: CGRect = .zero
+    @Published var refinementDepthImageSize: CGSize = .zero
+    private var initialCroppedCSV: URL?
     
     var errorMessage = ""
     var fileToShare: URL?
@@ -194,7 +199,7 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         let originalWidth = maxX + 1
         let originalHeight = maxY + 1
         
-        // Create rotated dimensions to match camera capture orientation (90° rotation)
+        // Create rotated dimensions to match camera capture orientation (90 degree rotation)
         let rotatedWidth = originalHeight  // Swap width and height like camera capture
         let rotatedHeight = originalWidth
         
@@ -265,8 +270,8 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         return UIImage(cgImage: cgImage)
     }
     
-    // MARK: - Mask Expansion for 3D Object Completeness
-    private func expandMaskFor3DObject(_ maskImage: UIImage, depthImageSize: CGSize) -> UIImage? {
+    // MARK: - FIXED: Fast Simple Mask Expansion (replaces the 70-second version)
+    private func simpleExpandMask(_ maskImage: UIImage) -> UIImage? {
         guard let cgImage = maskImage.cgImage else { return maskImage }
         
         let width = cgImage.width
@@ -294,8 +299,8 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
             binaryMask[i] = red > 128 // Threshold for mask inclusion
         }
         
-        // Apply morphological dilation to expand mask
-        let dilationRadius = max(2, min(width, height) / 100) // Adaptive radius based on image size
+        // Apply MINIMAL dilation (just 1-2 pixels) to avoid 70-second hang
+        let dilationRadius = 2 // Fixed small radius instead of adaptive
         var expandedMask = binaryMask
         
         for _ in 0..<dilationRadius {
@@ -306,28 +311,19 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
                     let index = y * width + x
                     
                     if !expandedMask[index] {
-                        // Check 8-connected neighbors
-                        var hasNeighbor = false
-                        for dy in -1...1 {
-                            for dx in -1...1 {
-                                if dx == 0 && dy == 0 { continue }
-                                
-                                let nx = x + dx
-                                let ny = y + dy
-                                
-                                if nx >= 0 && nx < width && ny >= 0 && ny < height {
-                                    let neighborIndex = ny * width + nx
-                                    if expandedMask[neighborIndex] {
-                                        hasNeighbor = true
-                                        break
-                                    }
+                        // Check 4-connected neighbors only (not 8-connected)
+                        let neighbors = [
+                            (x, y-1), (x, y+1), (x-1, y), (x+1, y)
+                        ]
+                        
+                        for (nx, ny) in neighbors {
+                            if nx >= 0 && nx < width && ny >= 0 && ny < height {
+                                let neighborIndex = ny * width + nx
+                                if expandedMask[neighborIndex] {
+                                    newMask[index] = true
+                                    break
                                 }
                             }
-                            if hasNeighbor { break }
-                        }
-                        
-                        if hasNeighbor {
-                            newMask[index] = true
                         }
                     }
                 }
@@ -666,7 +662,7 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         let percentile95 = validDepths[Int(Float(validDepths.count) * 0.95)]
         let depthRange = percentile95 - percentile5
         
-        // Create CGImage with rotated dimensions (90° clockwise rotation)
+        // Create CGImage with rotated dimensions (90 degree clockwise rotation)
         let rotatedWidth = originalHeight  // Swap width and height
         let rotatedHeight = originalWidth
         
@@ -711,7 +707,7 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
                     color = interpolateColor(colormap: jetColormap, t: enhancedDepth)
                 }
                 
-                // Rotate 90° counterclockwise: (x,y) -> (originalHeight-1-y, x)
+                // Rotate 90 degree counterclockwise: (x,y) -> (originalHeight-1-y, x)
                 let rotatedX = originalHeight - 1 - y
                 let rotatedY = x
                 let dataIndex = (rotatedY * rotatedWidth + rotatedX) * 4
@@ -960,17 +956,25 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
     
     // MARK: - Mask-based Cropping Function (Add this to CameraManager.swift)
     func cropDepthDataWithMask(_ maskImage: UIImage, imageFrame: CGRect, depthImageSize: CGSize) {
-        // Expand mask to include object sides
-        guard let expandedMask = expandMaskFor3DObject(maskImage, depthImageSize: depthImageSize) else {
+        // Use simple fast expansion instead of the 70-second version
+        guard let expandedMask = simpleExpandMask(maskImage) else {
             presentError("Failed to expand mask for 3D object.")
             return
         }
         
+        // Save the cropped photo using the mask
+        if let photo = capturedPhoto {
+            DispatchQueue.global(qos: .userInitiated).async {
+                let croppedPhoto = self.cropPhoto(photo, withMask: expandedMask, imageFrame: imageFrame)
+                DispatchQueue.main.async {
+                    self.croppedPhoto = croppedPhoto
+                }
+            }
+        }
+        
         if !uploadedCSVData.isEmpty {
-            // Handle uploaded CSV cropping with expanded mask
             cropUploadedCSVWithMask(expandedMask, imageFrame: imageFrame, depthImageSize: depthImageSize)
         } else if let depthData = rawDepthData {
-            // Handle camera-captured depth data cropping with expanded mask
             saveDepthDataToFileWithMask(depthData: depthData, maskImage: expandedMask, imageFrame: imageFrame, depthImageSize: depthImageSize)
         } else {
             presentError("No depth data available for cropping.")
@@ -979,6 +983,48 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         
         DispatchQueue.main.async {
             self.hasOutline = true
+        }
+    }
+
+    // Add this new function to crop the photo with the mask
+    private func cropPhoto(_ photo: UIImage, withMask maskImage: UIImage, imageFrame: CGRect) -> UIImage? {
+        guard let maskCGImage = maskImage.cgImage,
+              let photoCGImage = photo.cgImage else { return nil }
+        
+        let size = photo.size
+        
+        UIGraphicsBeginImageContextWithOptions(size, false, photo.scale)
+        guard let context = UIGraphicsGetCurrentContext() else { return nil }
+        
+        // Draw the photo
+        photo.draw(at: .zero)
+        
+        // Create mask from the brown mask image
+        context.setBlendMode(.destinationIn)
+        
+        // Draw mask
+        UIImage(cgImage: maskCGImage).draw(in: CGRect(origin: .zero, size: size), blendMode: .destinationIn, alpha: 1.0)
+        
+        let croppedPhoto = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
+        
+        return croppedPhoto
+    }
+
+    // MARK: - FIXED: Refinement Function (no more 70-second hang)
+    func refineWithSecondaryMask(_ secondaryMask: UIImage, imageFrame: CGRect, depthImageSize: CGSize, primaryCroppedCSV: URL) {
+        // Use simple fast expansion instead of the 70-second version
+        guard let expandedMask = simpleExpandMask(secondaryMask) else {
+            presentError("Failed to expand secondary mask.")
+            return
+        }
+        
+        // Store the refinement mask for the 3D view
+        DispatchQueue.main.async {
+            self.refinementMask = expandedMask
+            self.refinementImageFrame = imageFrame
+            self.refinementDepthImageSize = depthImageSize
+            self.show3DView = true
         }
     }
 
