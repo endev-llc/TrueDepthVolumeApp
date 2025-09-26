@@ -472,7 +472,7 @@ struct DepthVisualization3DView: View {
         let primaryPointCloudGeometry = createPointCloudGeometry(from: primaryMeasurementPoints3D)
         let primaryPointCloudNode = SCNNode(geometry: primaryPointCloudGeometry)
         
-        let (primaryVoxelGeometry, primaryVolumeInfo) = createVoxelGeometry(from: primaryMeasurementPoints3D, color: SCNVector3(0, 1, 1)) // Cyan
+        let (primaryVoxelGeometry, primaryVolumeInfo) = createVoxelGeometry(from: primaryMeasurementPoints3D, color: SCNVector3(0, 1, 1), refinementMask: refinementMeasurementPoints3D) // Cyan
         let primaryVoxelNodeInstance = SCNNode(geometry: primaryVoxelGeometry)
         
         // Update primary volume information
@@ -594,7 +594,7 @@ struct DepthVisualization3DView: View {
         return (SCNVector3(minX, minY, minZ), SCNVector3(maxX, maxY, maxZ))
     }
     
-    private func createVoxelGeometry(from measurementPoints3D: [SCNVector3], color: SCNVector3 = SCNVector3(0, 1, 1)) -> (SCNGeometry, VoxelVolumeInfo) {
+    private func createVoxelGeometry(from measurementPoints3D: [SCNVector3], color: SCNVector3 = SCNVector3(0, 1, 1), refinementMask: [SCNVector3]? = nil) -> (SCNGeometry, VoxelVolumeInfo) {
         guard !measurementPoints3D.isEmpty else {
             return (SCNGeometry(), VoxelVolumeInfo(totalVolume: 0.0, voxelCount: 0, voxelSize: 0.0))
         }
@@ -667,6 +667,37 @@ struct DepthVisualization3DView: View {
         }
         
         filledVoxels.formUnion(surfaceVoxels)
+
+        // Apply refinement mask if provided
+        if let refinementPoints = refinementMask, !refinementPoints.isEmpty {
+            // Create a set of X,Y coordinates from refinement points with tolerance
+            let tolerance: Float = voxelSize * 1.5 // Allow some overlap tolerance
+            var refinementXYSet = Set<String>()
+            
+            for point in refinementPoints {
+                let gridX = Int((point.x - min.x) / voxelSize)
+                let gridY = Int((point.y - min.y) / voxelSize)
+                
+                // Add neighboring grid cells within tolerance
+                for dx in -1...1 {
+                    for dy in -1...1 {
+                        let adjX = gridX + dx
+                        let adjY = gridY + dy
+                        refinementXYSet.insert("\(adjX),\(adjY)")
+                    }
+                }
+            }
+            
+            // Filter filledVoxels to only include those with X,Y in refinement mask
+            let maskedVoxels = filledVoxels.filter { voxelKey in
+                let components = voxelKey.split(separator: ",")
+                let vx = components[0]
+                let vy = components[1]
+                return refinementXYSet.contains("\(vx),\(vy)")
+            }
+            
+            filledVoxels = Set(maskedVoxels)
+        }
         
         guard !filledVoxels.isEmpty else {
             return (SCNGeometry(), VoxelVolumeInfo(totalVolume: 0.0, voxelCount: 0, voxelSize: 0.0))
