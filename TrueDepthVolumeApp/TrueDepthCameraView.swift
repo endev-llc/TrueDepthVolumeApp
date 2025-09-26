@@ -179,19 +179,15 @@ struct TrueDepthCameraView: View {
             .fullScreenCover(isPresented: $cameraManager.show3DView) {
                 if let croppedFileURL = cameraManager.croppedFileToShare {
                     DepthVisualization3DView(
-                        csvFileURL: croppedFileURL,
+                        csvFileURL: croppedFileURL, cameraManager: cameraManager,
                         onDismiss: {
                             cameraManager.show3DView = false
-                            // Clear refinement data when dismissing
                             cameraManager.refinementMask = nil
-                        },
-                        refinementMask: cameraManager.refinementMask,
-                        refinementImageFrame: cameraManager.refinementImageFrame,
-                        refinementDepthImageSize: cameraManager.refinementDepthImageSize
+                        }
                     )
                 } else if let uploadedCSV = uploadedCSVFile {
                     DepthVisualization3DView(
-                        csvFileURL: uploadedCSV,
+                        csvFileURL: uploadedCSV, cameraManager: cameraManager,
                         onDismiss: { cameraManager.show3DView = false }
                     )
                 }

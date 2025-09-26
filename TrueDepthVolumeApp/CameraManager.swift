@@ -42,9 +42,9 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
     private var currentDepthData: AVDepthData?
     private var currentPhotoData: Data?
     private var captureCompletion: ((Bool) -> Void)?
-    private var rawDepthData: AVDepthData? // Store the raw depth data for cropping
+    var rawDepthData: AVDepthData? // Store the raw depth data for cropping
     private var cameraCalibrationData: AVCameraCalibrationData? // Store camera intrinsics
-    private var uploadedCSVData: [DepthPoint] = [] // Store uploaded CSV data for cropping
+    var uploadedCSVData: [DepthPoint] = [] // Store uploaded CSV data for cropping
 
     override init() {
         super.init()
