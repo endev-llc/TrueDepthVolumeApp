@@ -956,11 +956,18 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
     
     // MARK: - Mask-based Cropping Function (Add this to CameraManager.swift)
     func cropDepthDataWithMask(_ maskImage: UIImage, imageFrame: CGRect, depthImageSize: CGSize) {
-        // Use simple fast expansion instead of the 70-second version
-        guard let expandedMask = simpleExpandMask(maskImage) else {
-            presentError("Failed to expand mask for 3D object.")
+        
+        // Clean up the mask to remove small islands and keep only the largest component
+        guard let cleanedMask = cleanupMask(maskImage) else {
+            presentError("Failed to clean up mask for 3D object.")
             return
         }
+        
+        // Use simple fast expansion instead of the 70-second version
+            guard let expandedMask = simpleExpandMask(cleanedMask) else {
+                presentError("Failed to expand mask for 3D object.")
+                return
+            }
         
         // Save the cropped photo using the mask
         if let photo = capturedPhoto {
@@ -1248,5 +1255,137 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         
         let red = maskPixelData[pixelIndex]
         return red > 128 // Threshold for mask inclusion
+    }
+    
+    // MARK: - Mask Cleanup Function
+    private func cleanupMask(_ maskImage: UIImage) -> UIImage? {
+        guard let cgImage = maskImage.cgImage else { return maskImage }
+        
+        let width = cgImage.width
+        let height = cgImage.height
+        let totalPixels = width * height
+        
+        // Extract mask data more efficiently
+        var maskData = [UInt8](repeating: 0, count: totalPixels * 4)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let context = CGContext(
+            data: &maskData,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )
+        context?.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        
+        // Pre-allocate arrays for better performance
+        var componentLabels = [Int](repeating: -1, count: totalPixels)
+        var componentSizes = [Int]()
+        var currentComponentId = 0
+        
+        // Fast connected components using optimized flood fill with queue
+        for y in 0..<height {
+            for x in 0..<width {
+                let index = y * width + x
+                let pixelIndex = index * 4
+                
+                // Check if pixel is part of mask and not yet labeled
+                if maskData[pixelIndex] > 128 && componentLabels[index] == -1 {
+                    var componentSize = 0
+                    var queue = [index]
+                    var queueIndex = 0
+                    
+                    componentLabels[index] = currentComponentId
+                    
+                    // BFS with pre-allocated queue (faster than stack)
+                    while queueIndex < queue.count {
+                        let currentIndex = queue[queueIndex]
+                        queueIndex += 1
+                        componentSize += 1
+                        
+                        let currentX = currentIndex % width
+                        let currentY = currentIndex / width
+                        
+                        // Optimized neighbor checking - unrolled loop
+                        // Up
+                        if currentY > 0 {
+                            let neighborIndex = currentIndex - width
+                            let neighborPixelIndex = neighborIndex * 4
+                            if maskData[neighborPixelIndex] > 128 && componentLabels[neighborIndex] == -1 {
+                                componentLabels[neighborIndex] = currentComponentId
+                                queue.append(neighborIndex)
+                            }
+                        }
+                        
+                        // Down
+                        if currentY < height - 1 {
+                            let neighborIndex = currentIndex + width
+                            let neighborPixelIndex = neighborIndex * 4
+                            if maskData[neighborPixelIndex] > 128 && componentLabels[neighborIndex] == -1 {
+                                componentLabels[neighborIndex] = currentComponentId
+                                queue.append(neighborIndex)
+                            }
+                        }
+                        
+                        // Left
+                        if currentX > 0 {
+                            let neighborIndex = currentIndex - 1
+                            let neighborPixelIndex = neighborIndex * 4
+                            if maskData[neighborPixelIndex] > 128 && componentLabels[neighborIndex] == -1 {
+                                componentLabels[neighborIndex] = currentComponentId
+                                queue.append(neighborIndex)
+                            }
+                        }
+                        
+                        // Right
+                        if currentX < width - 1 {
+                            let neighborIndex = currentIndex + 1
+                            let neighborPixelIndex = neighborIndex * 4
+                            if maskData[neighborPixelIndex] > 128 && componentLabels[neighborIndex] == -1 {
+                                componentLabels[neighborIndex] = currentComponentId
+                                queue.append(neighborIndex)
+                            }
+                        }
+                    }
+                    
+                    componentSizes.append(componentSize)
+                    currentComponentId += 1
+                }
+            }
+        }
+        
+        // Find largest component efficiently
+        guard !componentSizes.isEmpty else { return nil }
+        
+        let largestComponentId = componentSizes.enumerated().max(by: { $0.element < $1.element })!.offset
+        
+        // Create cleaned mask data directly
+        var cleanedMaskData = [UInt8](repeating: 0, count: totalPixels * 4)
+        
+        // Single pass to create cleaned mask
+        for i in 0..<totalPixels {
+            if componentLabels[i] == largestComponentId {
+                let pixelIndex = i * 4
+                cleanedMaskData[pixelIndex] = 139     // R - brown
+                cleanedMaskData[pixelIndex + 1] = 69  // G - brown
+                cleanedMaskData[pixelIndex + 2] = 19  // B - brown
+                cleanedMaskData[pixelIndex + 3] = 255 // A - opaque
+            }
+        }
+        
+        guard let cleanedContext = CGContext(
+            data: &cleanedMaskData,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let cleanedCGImage = cleanedContext.makeImage() else {
+            return maskImage
+        }
+        
+        return UIImage(cgImage: cleanedCGImage)
     }
 }
