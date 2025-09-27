@@ -25,8 +25,8 @@ struct DepthVisualization3DView: View {
     @State private var refinementVoxelCount: Int = 0 // Added refinement voxel count
     @State private var cameraIntrinsics: CameraIntrinsics? = nil
     @State private var showVoxels: Bool = true
-    @State private var showPrimaryPointCloud: Bool = true // Added primary point cloud toggle
-    @State private var showRefinementPointCloud: Bool = true // Added refinement point cloud toggle
+    @State private var showPrimaryPointCloud: Bool = false // Changed to false by default
+    @State private var showRefinementPointCloud: Bool = false // Changed to false by default
     @State private var voxelNode: SCNNode?
     @State private var primaryPointCloudNode: SCNNode? // Added primary point cloud node
     @State private var refinementPointCloudNode: SCNNode? // Added refinement point cloud node
@@ -485,7 +485,7 @@ struct DepthVisualization3DView: View {
         let primaryPointCloudGeometry = createPointCloudGeometry(from: primaryMeasurementPoints3D)
         let primaryPointCloudNodeInstance = SCNNode(geometry: primaryPointCloudGeometry)
         
-        let (primaryVoxelGeometry, primaryVolumeInfo) = createVoxelGeometry(from: primaryMeasurementPoints3D, color: SCNVector3(0, 1, 1), refinementMask: refinementMeasurementPoints3D) // Cyan
+        let (primaryVoxelGeometry, primaryVolumeInfo) = createVoxelGeometry(from: primaryMeasurementPoints3D, refinementMask: refinementMeasurementPoints3D)
         let primaryVoxelNodeInstance = SCNNode(geometry: primaryVoxelGeometry)
         
         // Update primary volume information and store point cloud node reference
@@ -511,7 +511,7 @@ struct DepthVisualization3DView: View {
             let refinementPointCloudGeometry = createPointCloudGeometry(from: refPoints)
             refinementPointCloudNodeInstance = SCNNode(geometry: refinementPointCloudGeometry)
             
-            let (refinementVoxelGeometry, refinementVolumeInfo) = createVoxelGeometry(from: refPoints, color: SCNVector3(0, 1, 0)) // Green
+            let (refinementVoxelGeometry, refinementVolumeInfo) = createVoxelGeometry(from: refPoints)
             
             // Update refinement volume information and store node references
             DispatchQueue.main.async {
@@ -607,7 +607,7 @@ struct DepthVisualization3DView: View {
         return (SCNVector3(minX, minY, minZ), SCNVector3(maxX, maxY, maxZ))
     }
     
-    private func createVoxelGeometry(from measurementPoints3D: [SCNVector3], color: SCNVector3 = SCNVector3(0, 1, 1), refinementMask: [SCNVector3]? = nil) -> (SCNGeometry, VoxelVolumeInfo) {
+    private func createVoxelGeometry(from measurementPoints3D: [SCNVector3], refinementMask: [SCNVector3]? = nil) -> (SCNGeometry, VoxelVolumeInfo) {
         guard !measurementPoints3D.isEmpty else {
             return (SCNGeometry(), VoxelVolumeInfo(totalVolume: 0.0, voxelCount: 0, voxelSize: 0.0))
         }
@@ -753,8 +753,13 @@ struct DepthVisualization3DView: View {
             
             voxelVertices.append(contentsOf: cubeVertices)
             
+            // Color based on measurement depth (Z coordinate) - depth-based coloring
+            let normalizedDepth = (centerZ - min.z) / (max.z - min.z)
+            let invertedDepth = 1.0 - normalizedDepth  // Invert: closer = high value, farther = low value
+            let voxelColor = depthToColor(invertedDepth)  // Pass inverted depth
+            
             for _ in 0..<8 {
-                voxelColors.append(color) // Use the provided color
+                voxelColors.append(voxelColor)
             }
         }
         
@@ -935,18 +940,23 @@ struct DepthVisualization3DView: View {
     }
     
     private func depthToColor(_ normalizedDepth: Float) -> SCNVector3 {
+        // Jet colormap: blue (far) -> green -> yellow -> red (close)
         let t = normalizedDepth
         
         if t < 0.25 {
+            // Blue to cyan
             let local_t = t / 0.25
             return SCNVector3(0, local_t, 1)
         } else if t < 0.5 {
+            // Cyan to green
             let local_t = (t - 0.25) / 0.25
             return SCNVector3(0, 1, 1 - local_t)
         } else if t < 0.75 {
+            // Green to yellow
             let local_t = (t - 0.5) / 0.25
             return SCNVector3(local_t, 1, 0)
         } else {
+            // Yellow to red
             let local_t = (t - 0.75) / 0.25
             return SCNVector3(1, 1 - local_t, 0)
         }
@@ -974,7 +984,7 @@ struct DepthVisualization3DView: View {
         let secondaryLight = SCNLight()
         secondaryLight.type = .directional
         secondaryLight.color = UIColor.white
-        directionalLight.intensity = 300
+        secondaryLight.intensity = 300
         let secondaryLightNode = SCNNode()
         secondaryLightNode.light = secondaryLight
         secondaryLightNode.position = SCNVector3(-10, 10, -10)
