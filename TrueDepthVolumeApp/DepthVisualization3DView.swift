@@ -25,9 +25,11 @@ struct DepthVisualization3DView: View {
     @State private var refinementVoxelCount: Int = 0 // Added refinement voxel count
     @State private var cameraIntrinsics: CameraIntrinsics? = nil
     @State private var showVoxels: Bool = true
-    @State private var showRefinementVoxels: Bool = true // Added refinement toggle
+    @State private var showPrimaryPointCloud: Bool = true // Added primary point cloud toggle
+    @State private var showRefinementPointCloud: Bool = true // Added refinement point cloud toggle
     @State private var voxelNode: SCNNode?
-    @State private var refinementVoxelNode: SCNNode? // Added refinement voxel node
+    @State private var primaryPointCloudNode: SCNNode? // Added primary point cloud node
+    @State private var refinementPointCloudNode: SCNNode? // Added refinement point cloud node
     
     var body: some View {
         ZStack {
@@ -57,13 +59,6 @@ struct DepthVisualization3DView: View {
                                     .font(.subheadline)
                                     .fontWeight(.semibold)
                                 
-                                if refinementVoxelCount > 0 {
-                                    Text("Refined: \(String(format: "%.2f", refinementVolume * 1_000_000)) cm³")
-                                        .foregroundColor(.green)
-                                        .font(.subheadline)
-                                        .fontWeight(.semibold)
-                                }
-                                
                                 Text("\(voxelCount) voxels • \(String(format: "%.1f", voxelSize * 1000))mm each")
                                     .foregroundColor(.gray)
                                     .font(.caption)
@@ -73,9 +68,9 @@ struct DepthVisualization3DView: View {
                     
                     Spacer()
                     
-                    // Voxel toggles
+                    // Point cloud and voxel toggles
                     VStack(spacing: 8) {
-                        Toggle("Primary", isOn: $showVoxels)
+                        Toggle("Primary Voxels", isOn: $showVoxels)
                             .foregroundColor(.cyan)
                             .font(.caption)
                             .toggleStyle(SwitchToggleStyle(tint: .cyan))
@@ -83,13 +78,21 @@ struct DepthVisualization3DView: View {
                                 toggleVoxelVisibility(show: newValue)
                             }
                         
-                        if refinementVoxelNode != nil {
-                            Toggle("Refined", isOn: $showRefinementVoxels)
+                        Toggle("Primary Points", isOn: $showPrimaryPointCloud)
+                            .foregroundColor(.cyan)
+                            .font(.caption)
+                            .toggleStyle(SwitchToggleStyle(tint: .cyan))
+                            .onChange(of: showPrimaryPointCloud) { _, newValue in
+                                togglePrimaryPointCloudVisibility(show: newValue)
+                            }
+                        
+                        if refinementPointCloudNode != nil {
+                            Toggle("Refined Points", isOn: $showRefinementPointCloud)
                                 .foregroundColor(.green)
                                 .font(.caption)
                                 .toggleStyle(SwitchToggleStyle(tint: .green))
-                                .onChange(of: showRefinementVoxels) { _, newValue in
-                                    toggleRefinementVoxelVisibility(show: newValue)
+                                .onChange(of: showRefinementPointCloud) { _, newValue in
+                                    toggleRefinementPointCloudVisibility(show: newValue)
                                 }
                         }
                     }
@@ -161,13 +164,23 @@ struct DepthVisualization3DView: View {
         }
     }
     
-    private func toggleRefinementVoxelVisibility(show: Bool) {
-        guard let refinementVoxelNode = refinementVoxelNode else { return }
+    private func togglePrimaryPointCloudVisibility(show: Bool) {
+        guard let primaryPointCloudNode = primaryPointCloudNode else { return }
         
         if show {
-            scene?.rootNode.addChildNode(refinementVoxelNode)
+            scene?.rootNode.addChildNode(primaryPointCloudNode)
         } else {
-            refinementVoxelNode.removeFromParentNode()
+            primaryPointCloudNode.removeFromParentNode()
+        }
+    }
+    
+    private func toggleRefinementPointCloudVisibility(show: Bool) {
+        guard let refinementPointCloudNode = refinementPointCloudNode else { return }
+        
+        if show {
+            scene?.rootNode.addChildNode(refinementPointCloudNode)
+        } else {
+            refinementPointCloudNode.removeFromParentNode()
         }
     }
     
@@ -470,45 +483,45 @@ struct DepthVisualization3DView: View {
         
         // Create primary point cloud and voxels with shifted points
         let primaryPointCloudGeometry = createPointCloudGeometry(from: primaryMeasurementPoints3D)
-        let primaryPointCloudNode = SCNNode(geometry: primaryPointCloudGeometry)
+        let primaryPointCloudNodeInstance = SCNNode(geometry: primaryPointCloudGeometry)
         
         let (primaryVoxelGeometry, primaryVolumeInfo) = createVoxelGeometry(from: primaryMeasurementPoints3D, color: SCNVector3(0, 1, 1), refinementMask: refinementMeasurementPoints3D) // Cyan
         let primaryVoxelNodeInstance = SCNNode(geometry: primaryVoxelGeometry)
         
-        // Update primary volume information
+        // Update primary volume information and store point cloud node reference
         DispatchQueue.main.async {
             self.totalVolume = primaryVolumeInfo.totalVolume
             self.voxelCount = primaryVolumeInfo.voxelCount
             self.voxelSize = primaryVolumeInfo.voxelSize
             self.voxelNode = primaryVoxelNodeInstance
+            self.primaryPointCloudNode = primaryPointCloudNodeInstance
         }
         
-        scene.rootNode.addChildNode(primaryPointCloudNode)
+        if showPrimaryPointCloud {
+            scene.rootNode.addChildNode(primaryPointCloudNodeInstance)
+        }
         if showVoxels {
             scene.rootNode.addChildNode(primaryVoxelNodeInstance)
         }
         
         // Create refinement if exists
-        var refinementPointCloudNode: SCNNode? = nil
-        var refinementVoxelNodeInstance: SCNNode? = nil
+        var refinementPointCloudNodeInstance: SCNNode? = nil
         if let refPoints = refinementMeasurementPoints3D {
             // Create refinement point cloud and voxels
             let refinementPointCloudGeometry = createPointCloudGeometry(from: refPoints)
-            refinementPointCloudNode = SCNNode(geometry: refinementPointCloudGeometry)
+            refinementPointCloudNodeInstance = SCNNode(geometry: refinementPointCloudGeometry)
             
             let (refinementVoxelGeometry, refinementVolumeInfo) = createVoxelGeometry(from: refPoints, color: SCNVector3(0, 1, 0)) // Green
-            refinementVoxelNodeInstance = SCNNode(geometry: refinementVoxelGeometry)
             
-            // Update refinement volume information
+            // Update refinement volume information and store node references
             DispatchQueue.main.async {
                 self.refinementVolume = refinementVolumeInfo.totalVolume
                 self.refinementVoxelCount = refinementVolumeInfo.voxelCount
-                self.refinementVoxelNode = refinementVoxelNodeInstance
+                self.refinementPointCloudNode = refinementPointCloudNodeInstance
             }
             
-            scene.rootNode.addChildNode(refinementPointCloudNode!)
-            if showRefinementVoxels {
-                scene.rootNode.addChildNode(refinementVoxelNodeInstance!)
+            if showRefinementPointCloud {
+                scene.rootNode.addChildNode(refinementPointCloudNodeInstance!)
             }
         }
         
@@ -961,7 +974,7 @@ struct DepthVisualization3DView: View {
         let secondaryLight = SCNLight()
         secondaryLight.type = .directional
         secondaryLight.color = UIColor.white
-        secondaryLight.intensity = 300
+        directionalLight.intensity = 300
         let secondaryLightNode = SCNNode()
         secondaryLightNode.light = secondaryLight
         secondaryLightNode.position = SCNVector3(-10, 10, -10)
