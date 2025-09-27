@@ -19,8 +19,6 @@ struct TrueDepthCameraView: View {
     @State private var showOverlayView = false
     @State private var uploadedCSVFile: URL?
     @State private var showDocumentPicker = false
-    @State private var showRefinementView = false
-    @State private var primaryCroppedCSV: URL?
 
     var body: some View {
         NavigationView {
@@ -69,8 +67,8 @@ struct TrueDepthCameraView: View {
                             .cornerRadius(10)
                     }
                     
-                    // Show buttons when data is captured OR CSV is uploaded and processed
-                    if cameraManager.capturedDepthImage != nil {
+                    // Show buttons only for uploaded CSV (manual flow)
+                    if cameraManager.capturedDepthImage != nil && uploadedCSVFile != nil {
                         HStack(spacing: 15) {
                             Button(action: {
                                 showOverlayView = true
@@ -100,12 +98,10 @@ struct TrueDepthCameraView: View {
                         }
                     }
                     
-                    // 3D View button (show if we have uploaded CSV or cropped file)
-                    if uploadedCSVFile != nil || cameraManager.croppedFileToShare != nil {
+                    // 3D View button (show only for uploaded CSV manual flow)
+                    if uploadedCSVFile != nil && cameraManager.capturedDepthImage == nil {
                         Button(action: {
                             cameraManager.show3DView = true
-                            // Store the primary cropped CSV for potential refinement
-                            primaryCroppedCSV = cameraManager.croppedFileToShare
                         }) {
                             Text("View 3D")
                                 .font(.headline)
@@ -113,21 +109,6 @@ struct TrueDepthCameraView: View {
                                 .foregroundColor(.white)
                                 .padding()
                                 .background(Color.purple)
-                                .cornerRadius(15)
-                        }
-                    }
-                    
-                    // Add refinement button after 3D view button
-                    if primaryCroppedCSV != nil, let _ = cameraManager.croppedPhoto {
-                        Button(action: {
-                            showRefinementView = true
-                        }) {
-                            Text("Refine Contents")
-                                .font(.headline)
-                                .fontWeight(.bold)
-                                .foregroundColor(.white)
-                                .padding()
-                                .background(Color.green)
                                 .cornerRadius(15)
                         }
                     }
@@ -168,11 +149,11 @@ struct TrueDepthCameraView: View {
             }
             .fullScreenCover(isPresented: $showOverlayView) {
                 if let depthImage = cameraManager.capturedDepthImage {
-                    OverlayView(
+                    AutoFlowOverlayView(
                         depthImage: depthImage,
-                        photo: cameraManager.capturedPhoto, // This can be nil for uploaded CSV
+                        photo: cameraManager.capturedPhoto,
                         cameraManager: cameraManager,
-                        onDismiss: { showOverlayView = false }
+                        onComplete: { showOverlayView = false }
                     )
                 }
             }
@@ -192,23 +173,6 @@ struct TrueDepthCameraView: View {
                     )
                 }
             }
-            .fullScreenCover(isPresented: $showRefinementView) {
-                if let croppedPhoto = cameraManager.croppedPhoto,
-                   let primaryCSV = primaryCroppedCSV {
-                    OverlayView(
-                        depthImage: croppedPhoto, // Use the cropped photo for refinement
-                        photo: croppedPhoto,
-                        cameraManager: cameraManager,
-                        onDismiss: { showRefinementView = false },
-                        isRefinementMode: true,
-                        primaryCroppedCSV: primaryCSV,
-                        onRefine: { mask, frame, size in
-                            cameraManager.refineWithSecondaryMask(mask, imageFrame: frame, depthImageSize: size, primaryCroppedCSV: primaryCSV)
-                            showRefinementView = false
-                        }
-                    )
-                }
-            }
             .onReceive(volumeManager.$volumePressed) { pressed in
                 if pressed {
                     cameraManager.captureDepthAndPhoto()
@@ -217,6 +181,12 @@ struct TrueDepthCameraView: View {
             .onChange(of: uploadedCSVFile) { _, newFile in
                 if let file = newFile {
                     cameraManager.processUploadedCSV(file)
+                }
+            }
+            // AUTOMATIC FLOW: Show overlay immediately after capture
+            .onChange(of: cameraManager.capturedDepthImage) { _, newImage in
+                if newImage != nil && uploadedCSVFile == nil { // Only for camera captures, not uploaded CSV
+                    showOverlayView = true
                 }
             }
         }
