@@ -10,6 +10,30 @@ import SwiftUI
 import PhotosUI
 import UIKit
 
+// MARK: - Mask Compositing Helper
+func compositeMasks(_ existingMask: UIImage?, with newMask: UIImage) -> UIImage {
+    guard let existing = existingMask else { return newMask }
+    
+    // Use the larger of the two sizes to ensure we capture both masks
+    let size = CGSize(
+        width: max(existing.size.width, newMask.size.width),
+        height: max(existing.size.height, newMask.size.height)
+    )
+    
+    UIGraphicsBeginImageContextWithOptions(size, false, 0.0)
+    defer { UIGraphicsEndImageContext() }
+    
+    // Draw existing mask
+    existing.draw(in: CGRect(origin: .zero, size: existing.size))
+    
+    // Draw new mask on top (pixels will combine/overlap)
+    newMask.draw(in: CGRect(origin: .zero, size: newMask.size), blendMode: .normal, alpha: 1.0)
+    
+    let compositedMask = UIGraphicsGetImageFromCurrentImageContext()
+    
+    return compositedMask ?? newMask
+}
+
 struct MobileSAMView: View {
     @StateObject private var samManager = MobileSAMManager()
     @State private var selectedImage: UIImage?
@@ -232,7 +256,7 @@ struct MobileSAMView: View {
                             .foregroundColor(.white)
                             .cornerRadius(8)
                     } else {
-                        Text("Tap anywhere to segment")
+                        Text("Tap to segment (multiple taps combine)")
                             .font(.caption)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
@@ -280,7 +304,8 @@ struct MobileSAMView: View {
             let mask = await samManager.generateMask(at: relativeLocation, in: imageDisplaySize)
             await MainActor.run {
                 if let mask = mask {
-                    self.maskImage = mask
+                    // CHANGED: Composite instead of replace
+                    self.maskImage = compositeMasks(self.maskImage, with: mask)
                 }
             }
         }

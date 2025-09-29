@@ -124,13 +124,23 @@ struct AutoSegmentOverlayView: View {
                         .padding()
                     }
                     
+                    // ADDED: Clear masks button
+                    if maskImage != nil && !showConfirmButton {
+                        Button("Clear") {
+                            maskImage = nil
+                            tapLocation = .zero
+                        }
+                        .foregroundColor(.red)
+                        .padding(.horizontal)
+                    }
+                    
                     if showConfirmButton {
                         Button("Confirm") {
                             cropCSVWithMask()
                         }
                         .foregroundColor(.green)
                         .padding()
-                    } else {
+                    } else if maskImage == nil {
                         // Placeholder for spacing
                         Text("")
                             .padding()
@@ -279,7 +289,7 @@ struct AutoSegmentOverlayView: View {
         } else if maskImage == nil {
             return "Tap anywhere on the primary object you want to measure."
         } else {
-            return "AI mask applied! Tap 'Confirm' to proceed to refinement."
+            return "AI mask applied! Tap more areas to add to mask, or tap 'Confirm' when done."
         }
     }
     
@@ -332,7 +342,8 @@ struct AutoSegmentOverlayView: View {
             let mask = await samManager.generateMask(at: relativeLocation, in: imageDisplaySize)
             await MainActor.run {
                 if let mask = mask {
-                    self.maskImage = mask
+                    // CHANGED: Composite instead of replace
+                    self.maskImage = compositeMasks(self.maskImage, with: mask)
                     self.showConfirmButton = true
                 }
             }
@@ -398,6 +409,16 @@ struct RefinementOverlayView: View {
                         }
                         .foregroundColor(.gray)
                         .padding(.horizontal)
+                        
+                        // ADDED: Clear masks button
+                        if maskImage != nil && !showConfirmButton {
+                            Button("Clear") {
+                                maskImage = nil
+                                tapLocation = .zero
+                            }
+                            .foregroundColor(.red)
+                            .padding(.horizontal)
+                        }
                         
                         if showConfirmButton {
                             Button("Confirm") {
@@ -502,7 +523,7 @@ struct RefinementOverlayView: View {
         } else if maskImage == nil {
             return "Tap the food contents you want to isolate, or tap 'Skip' to use the full primary object."
         } else {
-            return "Refinement mask applied! Tap 'Confirm' to apply or 'Skip' to use the full primary object."
+            return "Mask applied! Tap more areas to add, or tap 'Confirm' to apply or 'Skip' to use the full primary object."
         }
     }
     
@@ -556,7 +577,8 @@ struct RefinementOverlayView: View {
             let mask = await samManager.generateMask(at: relativeLocation, in: imageDisplaySize)
             await MainActor.run {
                 if let mask = mask {
-                    self.maskImage = mask
+                    // CHANGED: Composite instead of replace
+                    self.maskImage = compositeMasks(self.maskImage, with: mask)
                     self.showConfirmButton = true
                 }
             }

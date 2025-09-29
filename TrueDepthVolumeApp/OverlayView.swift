@@ -120,6 +120,16 @@ struct OverlayView: View {
                         .foregroundColor(.white)
                         .padding()
                         
+                        // ADDED: Clear masks button
+                        if maskImage != nil && !showConfirmButton {
+                            Button("Clear") {
+                                maskImage = nil
+                                tapLocation = .zero
+                            }
+                            .foregroundColor(.red)
+                            .padding()
+                        }
+                        
                         if showConfirmButton {
                             Button("Confirm") {
                                 if isRefinementMode {
@@ -312,9 +322,9 @@ struct OverlayView: View {
                 }
             } else {
                 if isRefinementMode {
-                    return "Food mask applied! Tap 'Confirm' to refine the 3D model."
+                    return "Food mask applied! Tap more areas to add to mask, or tap 'Confirm' to refine the 3D model."
                 } else {
-                    return "AI mask applied! Tap 'Confirm' to crop depth data to this object."
+                    return "AI mask applied! Tap more areas to add to mask, or tap 'Confirm' to crop depth data."
                 }
             }
         } else {
@@ -401,7 +411,8 @@ struct OverlayView: View {
             let mask = await samManager.generateMask(at: relativeLocation, in: imageDisplaySize)
             await MainActor.run {
                 if let mask = mask {
-                    self.maskImage = mask
+                    // CHANGED: Composite instead of replace
+                    self.maskImage = compositeMasks(self.maskImage, with: mask)
                     self.showConfirmButton = true
                 }
             }
