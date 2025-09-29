@@ -1031,7 +1031,7 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
             self.refinementMask = expandedMask
             self.refinementImageFrame = imageFrame
             self.refinementDepthImageSize = depthImageSize
-            self.show3DView = true
+            // REMOVED: self.show3DView = true  -- AutoFlowOverlayView manages this
         }
     }
 

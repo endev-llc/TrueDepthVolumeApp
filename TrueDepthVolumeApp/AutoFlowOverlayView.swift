@@ -592,7 +592,7 @@ struct RefinementOverlayView: View {
         cameraManager.refineWithSecondaryMask(maskImage, imageFrame: imageFrame, depthImageSize: depthImage.size, primaryCroppedCSV: primaryCSV)
         
         // Wait for refinement to complete and then proceed
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+        DispatchQueue.main.asyncAfter(deadline: .now()) {
             onRefinementComplete()
         }
     }
