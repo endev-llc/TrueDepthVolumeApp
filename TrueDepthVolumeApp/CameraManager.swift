@@ -291,58 +291,54 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         )
         context?.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
         
-        // Create binary mask array for easier processing
-        var binaryMask = [Bool](repeating: false, count: width * height)
+        // Create Set of mask pixels for O(1) lookup (MUCH faster than array)
+        var maskPixels = Set<Int>()
         for i in 0..<(width * height) {
             let pixelIndex = i * 4
-            let red = maskData[pixelIndex]
-            binaryMask[i] = red > 128 // Threshold for mask inclusion
+            if maskData[pixelIndex] > 128 {
+                maskPixels.insert(i)
+            }
         }
         
-        // Apply MINIMAL dilation (just 1-2 pixels) to avoid 70-second hang
-        let dilationRadius = 2 // Fixed small radius instead of adaptive
-        var expandedMask = binaryMask
+        // Expand only from boundary pixels (not all pixels)
+        let dilationRadius = 2
+        var pixelsToAdd = Set<Int>()
         
         for _ in 0..<dilationRadius {
-            var newMask = expandedMask
+            pixelsToAdd.removeAll(keepingCapacity: true)
             
-            for y in 0..<height {
-                for x in 0..<width {
-                    let index = y * width + x
-                    
-                    if !expandedMask[index] {
-                        // Check 4-connected neighbors only (not 8-connected)
-                        let neighbors = [
-                            (x, y-1), (x, y+1), (x-1, y), (x+1, y)
-                        ]
-                        
-                        for (nx, ny) in neighbors {
-                            if nx >= 0 && nx < width && ny >= 0 && ny < height {
-                                let neighborIndex = ny * width + nx
-                                if expandedMask[neighborIndex] {
-                                    newMask[index] = true
-                                    break
-                                }
-                            }
+            // Only check neighbors of EXISTING mask pixels (boundary-only)
+            for pixelIndex in maskPixels {
+                let x = pixelIndex % width
+                let y = pixelIndex / width
+                
+                // Check 4-connected neighbors
+                let neighbors = [
+                    (x, y-1), (x, y+1), (x-1, y), (x+1, y)
+                ]
+                
+                for (nx, ny) in neighbors {
+                    if nx >= 0 && nx < width && ny >= 0 && ny < height {
+                        let neighborIndex = ny * width + nx
+                        if !maskPixels.contains(neighborIndex) {
+                            pixelsToAdd.insert(neighborIndex)
                         }
                     }
                 }
             }
-            expandedMask = newMask
+            
+            // Add boundary neighbors to mask
+            maskPixels.formUnion(pixelsToAdd)
         }
         
-        // Convert back to image
+        // Convert back to image (only write mask pixels)
         var expandedMaskData = [UInt8](repeating: 0, count: width * height * 4)
-        for i in 0..<(width * height) {
-            let pixelIndex = i * 4
-            if expandedMask[i] {
-                expandedMaskData[pixelIndex] = 139     // R - brown
-                expandedMaskData[pixelIndex + 1] = 69  // G - brown
-                expandedMaskData[pixelIndex + 2] = 19  // B - brown
-                expandedMaskData[pixelIndex + 3] = 255 // A - opaque
-            } else {
-                expandedMaskData[pixelIndex + 3] = 0   // A - transparent
-            }
+        for pixelIndex in maskPixels {
+            let dataIndex = pixelIndex * 4
+            expandedMaskData[dataIndex] = 139     // R - brown
+            expandedMaskData[dataIndex + 1] = 69  // G - brown
+            expandedMaskData[dataIndex + 2] = 19  // B - brown
+            expandedMaskData[dataIndex + 3] = 255 // A - opaque
         }
         
         guard let expandedContext = CGContext(
