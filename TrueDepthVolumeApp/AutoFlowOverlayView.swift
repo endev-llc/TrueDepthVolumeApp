@@ -124,7 +124,7 @@ struct AutoSegmentOverlayView: View {
                         .padding()
                     }
                     
-                    // ADDED: Clear masks button
+                    // Clear masks button
                     if maskImage != nil && !showConfirmButton {
                         Button("Clear") {
                             maskImage = nil
@@ -146,6 +146,7 @@ struct AutoSegmentOverlayView: View {
                             .padding()
                     }
                 }
+                .frame(height: 44)
                 
                 // Opacity slider (only show if photo exists and not depth only)
                 if !showingDepthOnly && photo != nil {
@@ -162,21 +163,21 @@ struct AutoSegmentOverlayView: View {
                 
                 Spacer()
                 
-                // Image overlay
+                // Image overlay with proper coordinate space
                 GeometryReader { geometry in
                     ZStack {
                         // Depth image (bottom layer)
                         Image(uiImage: depthImage)
                             .resizable()
                             .aspectRatio(contentMode: .fit)
-                            .background(
+                            .overlay(
                                 GeometryReader { imageGeometry in
                                     Color.clear
                                         .onAppear {
-                                            updateImageFrame(containerSize: geometry.size)
+                                            updateImageFrame(imageGeometry: imageGeometry)
                                         }
-                                        .onChange(of: geometry.size) { _, newSize in
-                                            updateImageFrame(containerSize: newSize)
+                                        .onChange(of: imageGeometry.size) { _, _ in
+                                            updateImageFrame(imageGeometry: imageGeometry)
                                         }
                                 }
                             )
@@ -205,11 +206,13 @@ struct AutoSegmentOverlayView: View {
                                 .animation(.easeInOut(duration: 0.3), value: tapLocation)
                         }
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .contentShape(Rectangle())
                     .onTapGesture { location in
-                        handleAutoSegmentTap(at: location, geometry: geometry)
+                        handleAutoSegmentTap(at: location)
                     }
                 }
+                .coordinateSpace(name: "imageContainer")
                 .padding()
                 
                 Spacer()
@@ -220,11 +223,7 @@ struct AutoSegmentOverlayView: View {
                     .font(.caption)
                     .multilineTextAlignment(.center)
                     .padding()
-                
-                // Loading overlay for MobileSAM
-                if samManager.isLoading {
-                    loadingOverlay
-                }
+                    .frame(minHeight: 60, alignment: .top)
                 
                 // Error message for MobileSAM
                 if let errorMessage = samManager.errorMessage {
@@ -233,31 +232,11 @@ struct AutoSegmentOverlayView: View {
             }
         }
         .onAppear {
-            setupImageDisplaySize()
             startAutoSegmentation()
         }
     }
     
     // MARK: - Helper Views
-    private var loadingOverlay: some View {
-        ZStack {
-            Color.black.opacity(0.7)
-                .ignoresSafeArea()
-            
-            VStack(spacing: 20) {
-                ProgressView()
-                    .scaleEffect(1.5)
-                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                
-                Text(isImageEncoded ? "Generating mask..." : "Encoding image...")
-                    .foregroundColor(.white)
-                    .font(.headline)
-            }
-            .padding()
-            .background(Color.black.opacity(0.8))
-            .cornerRadius(12)
-        }
-    }
     
     private func errorMessageView(_ message: String) -> some View {
         VStack {
@@ -293,23 +272,11 @@ struct AutoSegmentOverlayView: View {
         }
     }
     
-    private func updateImageFrame(containerSize: CGSize) {
-        let imageAspectRatio = depthImage.size.width / depthImage.size.height
-        let containerAspectRatio = containerSize.width / containerSize.height
-        
-        if imageAspectRatio > containerAspectRatio {
-            let imageHeight = containerSize.width / imageAspectRatio
-            let yOffset = (containerSize.height - imageHeight) / 2
-            imageFrame = CGRect(x: 0, y: yOffset, width: containerSize.width, height: imageHeight)
-        } else {
-            let imageWidth = containerSize.height * imageAspectRatio
-            let xOffset = (containerSize.width - imageWidth) / 2
-            imageFrame = CGRect(x: xOffset, y: 0, width: imageWidth, height: containerSize.height)
-        }
-    }
-    
-    private func setupImageDisplaySize() {
-        imageDisplaySize = CGSize(width: imageFrame.width, height: imageFrame.height)
+    private func updateImageFrame(imageGeometry: GeometryProxy) {
+        // Get the actual frame of the rendered image in the container's coordinate space
+        let frame = imageGeometry.frame(in: .named("imageContainer"))
+        imageFrame = frame
+        imageDisplaySize = frame.size
     }
     
     // MARK: - Auto-Segmentation Functions
@@ -327,22 +294,21 @@ struct AutoSegmentOverlayView: View {
         }
     }
     
-    private func handleAutoSegmentTap(at location: CGPoint, geometry: GeometryProxy) {
+    private func handleAutoSegmentTap(at location: CGPoint) {
         guard isImageEncoded && !samManager.isLoading && imageFrame.contains(location) else { return }
         
         tapLocation = location
         
+        // Convert tap location to relative coordinates within the image
         let relativeX = location.x - imageFrame.minX
         let relativeY = location.y - imageFrame.minY
         let relativeLocation = CGPoint(x: relativeX, y: relativeY)
-        
-        imageDisplaySize = CGSize(width: imageFrame.width, height: imageFrame.height)
         
         Task {
             let mask = await samManager.generateMask(at: relativeLocation, in: imageDisplaySize)
             await MainActor.run {
                 if let mask = mask {
-                    // CHANGED: Composite instead of replace
+                    // Composite masks instead of replacing
                     self.maskImage = compositeMasks(self.maskImage, with: mask)
                     self.showConfirmButton = true
                 }
@@ -410,7 +376,7 @@ struct RefinementOverlayView: View {
                         .foregroundColor(.gray)
                         .padding(.horizontal)
                         
-                        // ADDED: Clear masks button
+                        // Clear masks button
                         if maskImage != nil && !showConfirmButton {
                             Button("Clear") {
                                 maskImage = nil
@@ -429,24 +395,25 @@ struct RefinementOverlayView: View {
                         }
                     }
                 }
+                .frame(height: 44)
                 
                 Spacer()
                 
-                // Image overlay
+                // Image overlay with proper coordinate space
                 GeometryReader { geometry in
                     ZStack {
                         // Cropped image
                         Image(uiImage: depthImage)
                             .resizable()
                             .aspectRatio(contentMode: .fit)
-                            .background(
+                            .overlay(
                                 GeometryReader { imageGeometry in
                                     Color.clear
                                         .onAppear {
-                                            updateImageFrame(containerSize: geometry.size)
+                                            updateImageFrame(imageGeometry: imageGeometry)
                                         }
-                                        .onChange(of: geometry.size) { _, newSize in
-                                            updateImageFrame(containerSize: newSize)
+                                        .onChange(of: imageGeometry.size) { _, _ in
+                                            updateImageFrame(imageGeometry: imageGeometry)
                                         }
                                 }
                             )
@@ -467,11 +434,13 @@ struct RefinementOverlayView: View {
                                 .animation(.easeInOut(duration: 0.3), value: tapLocation)
                         }
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .contentShape(Rectangle())
                     .onTapGesture { location in
-                        handleRefinementTap(at: location, geometry: geometry)
+                        handleRefinementTap(at: location)
                     }
                 }
+                .coordinateSpace(name: "refinementContainer")
                 .padding()
                 
                 Spacer()
@@ -482,37 +451,11 @@ struct RefinementOverlayView: View {
                     .font(.caption)
                     .multilineTextAlignment(.center)
                     .padding()
-                
-                // Loading overlay
-                if samManager.isLoading {
-                    loadingOverlay
-                }
+                    .frame(minHeight: 60, alignment: .top)
             }
         }
         .onAppear {
-            setupImageDisplaySize()
             startRefinementSegmentation()
-        }
-    }
-    
-    // MARK: - Helper Views
-    private var loadingOverlay: some View {
-        ZStack {
-            Color.black.opacity(0.7)
-                .ignoresSafeArea()
-            
-            VStack(spacing: 20) {
-                ProgressView()
-                    .scaleEffect(1.5)
-                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                
-                Text(isImageEncoded ? "Generating refinement mask..." : "Encoding image...")
-                    .foregroundColor(.white)
-                    .font(.headline)
-            }
-            .padding()
-            .background(Color.black.opacity(0.8))
-            .cornerRadius(12)
         }
     }
     
@@ -527,23 +470,11 @@ struct RefinementOverlayView: View {
         }
     }
     
-    private func updateImageFrame(containerSize: CGSize) {
-        let imageAspectRatio = depthImage.size.width / depthImage.size.height
-        let containerAspectRatio = containerSize.width / containerSize.height
-        
-        if imageAspectRatio > containerAspectRatio {
-            let imageHeight = containerSize.width / imageAspectRatio
-            let yOffset = (containerSize.height - imageHeight) / 2
-            imageFrame = CGRect(x: 0, y: yOffset, width: containerSize.width, height: imageHeight)
-        } else {
-            let imageWidth = containerSize.height * imageAspectRatio
-            let xOffset = (containerSize.width - imageWidth) / 2
-            imageFrame = CGRect(x: xOffset, y: 0, width: imageWidth, height: containerSize.height)
-        }
-    }
-    
-    private func setupImageDisplaySize() {
-        imageDisplaySize = CGSize(width: imageFrame.width, height: imageFrame.height)
+    private func updateImageFrame(imageGeometry: GeometryProxy) {
+        // Get the actual frame of the rendered image in the container's coordinate space
+        let frame = imageGeometry.frame(in: .named("refinementContainer"))
+        imageFrame = frame
+        imageDisplaySize = frame.size
     }
     
     private func startRefinementSegmentation() {
@@ -562,22 +493,21 @@ struct RefinementOverlayView: View {
         }
     }
     
-    private func handleRefinementTap(at location: CGPoint, geometry: GeometryProxy) {
+    private func handleRefinementTap(at location: CGPoint) {
         guard isImageEncoded && !samManager.isLoading && imageFrame.contains(location) else { return }
         
         tapLocation = location
         
+        // Convert tap location to relative coordinates within the image
         let relativeX = location.x - imageFrame.minX
         let relativeY = location.y - imageFrame.minY
         let relativeLocation = CGPoint(x: relativeX, y: relativeY)
-        
-        imageDisplaySize = CGSize(width: imageFrame.width, height: imageFrame.height)
         
         Task {
             let mask = await samManager.generateMask(at: relativeLocation, in: imageDisplaySize)
             await MainActor.run {
                 if let mask = mask {
-                    // CHANGED: Composite instead of replace
+                    // Composite masks instead of replacing
                     self.maskImage = compositeMasks(self.maskImage, with: mask)
                     self.showConfirmButton = true
                 }

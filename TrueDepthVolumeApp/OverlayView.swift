@@ -120,7 +120,7 @@ struct OverlayView: View {
                         .foregroundColor(.white)
                         .padding()
                         
-                        // ADDED: Clear masks button
+                        // Clear masks button
                         if maskImage != nil && !showConfirmButton {
                             Button("Clear") {
                                 maskImage = nil
@@ -144,6 +144,7 @@ struct OverlayView: View {
                         }
                     }
                 }
+                .frame(height: 44)
                 
                 // Opacity slider (only show if photo exists and not depth only and not in refinement mode)
                 if !showingDepthOnly && photo != nil && !isRefinementMode {
@@ -160,23 +161,21 @@ struct OverlayView: View {
                 
                 Spacer()
                 
-                // Image overlay with drawing
+                // Image overlay with drawing and proper coordinate space
                 GeometryReader { geometry in
                     ZStack {
                         // Depth image (bottom layer)
                         Image(uiImage: depthImage)
                             .resizable()
                             .aspectRatio(contentMode: .fit)
-                            .background(
+                            .overlay(
                                 GeometryReader { imageGeometry in
                                     Color.clear
                                         .onAppear {
-                                            // Calculate the actual image frame within the GeometryReader
-                                            updateImageFrame(containerSize: geometry.size)
+                                            updateImageFrame(imageGeometry: imageGeometry)
                                         }
-                                        .onChange(of: geometry.size) { _, newSize in
-                                            // Recalculate when container size changes (e.g., rotation)
-                                            updateImageFrame(containerSize: newSize)
+                                        .onChange(of: imageGeometry.size) { _, _ in
+                                            updateImageFrame(imageGeometry: imageGeometry)
                                         }
                                 }
                             )
@@ -229,13 +228,15 @@ struct OverlayView: View {
                             .stroke(Color.cyan, lineWidth: 3)
                         }
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .contentShape(Rectangle())
                     .onTapGesture { location in
                         if isAutoSegmentMode {
-                            handleAutoSegmentTap(at: location, geometry: geometry)
+                            handleAutoSegmentTap(at: location)
                         }
                     }
                 }
+                .coordinateSpace(name: "overlayContainer")
                 .padding()
                 
                 Spacer()
@@ -246,11 +247,7 @@ struct OverlayView: View {
                     .font(.caption)
                     .multilineTextAlignment(.center)
                     .padding()
-                
-                // Loading overlay for MobileSAM
-                if samManager.isLoading {
-                    loadingOverlay
-                }
+                    .frame(minHeight: 60, alignment: .top)
                 
                 // Error message for MobileSAM
                 if let errorMessage = samManager.errorMessage {
@@ -258,31 +255,9 @@ struct OverlayView: View {
                 }
             }
         }
-        .onAppear {
-            setupImageDisplaySize()
-        }
     }
     
     // MARK: - Helper Views
-    private var loadingOverlay: some View {
-        ZStack {
-            Color.black.opacity(0.7)
-                .ignoresSafeArea()
-            
-            VStack(spacing: 20) {
-                ProgressView()
-                    .scaleEffect(1.5)
-                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                
-                Text(isImageEncoded ? "Generating mask..." : "Encoding image...")
-                    .foregroundColor(.white)
-                    .font(.headline)
-            }
-            .padding()
-            .background(Color.black.opacity(0.8))
-            .cornerRadius(12)
-        }
-    }
     
     private func errorMessageView(_ message: String) -> some View {
         VStack {
@@ -336,29 +311,11 @@ struct OverlayView: View {
         }
     }
     
-    // NEW: Helper function to update image frame (replaces inline calculation)
-    private func updateImageFrame(containerSize: CGSize) {
-        let imageAspectRatio = depthImage.size.width / depthImage.size.height
-        let containerAspectRatio = containerSize.width / containerSize.height
-        
-        if imageAspectRatio > containerAspectRatio {
-            // Image is wider - fit to width
-            let imageHeight = containerSize.width / imageAspectRatio
-            let yOffset = (containerSize.height - imageHeight) / 2
-            imageFrame = CGRect(x: 0, y: yOffset, width: containerSize.width, height: imageHeight)
-        } else {
-            // Image is taller - fit to height
-            let imageWidth = containerSize.height * imageAspectRatio
-            let xOffset = (containerSize.width - imageWidth) / 2
-            imageFrame = CGRect(x: xOffset, y: 0, width: imageWidth, height: containerSize.height)
-        }
-    }
-    
-    private func setupImageDisplaySize() {
-        // Calculate the display size based on the image frame
-        let imageAspectRatio = depthImage.size.width / depthImage.size.height
-        // This will be updated when the geometry reader calculates the actual frame
-        imageDisplaySize = CGSize(width: imageFrame.width, height: imageFrame.height)
+    private func updateImageFrame(imageGeometry: GeometryProxy) {
+        // Get the actual frame of the rendered image in the container's coordinate space
+        let frame = imageGeometry.frame(in: .named("overlayContainer"))
+        imageFrame = frame
+        imageDisplaySize = frame.size
     }
     
     // MARK: - Auto-Segmentation Functions
@@ -393,7 +350,7 @@ struct OverlayView: View {
         samManager.currentImageEmbeddings = nil
     }
     
-    private func handleAutoSegmentTap(at location: CGPoint, geometry: GeometryProxy) {
+    private func handleAutoSegmentTap(at location: CGPoint) {
         guard isImageEncoded && !samManager.isLoading && imageFrame.contains(location) else { return }
         
         // Store the absolute tap location for the red dot indicator
@@ -404,14 +361,11 @@ struct OverlayView: View {
         let relativeY = location.y - imageFrame.minY
         let relativeLocation = CGPoint(x: relativeX, y: relativeY)
         
-        // Update imageDisplaySize based on current imageFrame
-        imageDisplaySize = CGSize(width: imageFrame.width, height: imageFrame.height)
-        
         Task {
             let mask = await samManager.generateMask(at: relativeLocation, in: imageDisplaySize)
             await MainActor.run {
                 if let mask = mask {
-                    // CHANGED: Composite instead of replace
+                    // Composite masks instead of replacing
                     self.maskImage = compositeMasks(self.maskImage, with: mask)
                     self.showConfirmButton = true
                 }
