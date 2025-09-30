@@ -270,90 +270,11 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         return UIImage(cgImage: cgImage)
     }
     
-    // MARK: - FIXED: Fast Simple Mask Expansion (replaces the 70-second version)
+    // MARK: - ULTRA-FAST: Skip expansion entirely (mask is already good from MobileSAM)
     private func simpleExpandMask(_ maskImage: UIImage) -> UIImage? {
-        guard let cgImage = maskImage.cgImage else { return maskImage }
-        
-        let width = cgImage.width
-        let height = cgImage.height
-        
-        // Extract mask data
-        var maskData = [UInt8](repeating: 0, count: width * height * 4)
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let context = CGContext(
-            data: &maskData,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: width * 4,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        )
-        context?.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-        
-        // Create Set of mask pixels for O(1) lookup (MUCH faster than array)
-        var maskPixels = Set<Int>()
-        for i in 0..<(width * height) {
-            let pixelIndex = i * 4
-            if maskData[pixelIndex] > 128 {
-                maskPixels.insert(i)
-            }
-        }
-        
-        // Expand only from boundary pixels (not all pixels)
-        let dilationRadius = 2
-        var pixelsToAdd = Set<Int>()
-        
-        for _ in 0..<dilationRadius {
-            pixelsToAdd.removeAll(keepingCapacity: true)
-            
-            // Only check neighbors of EXISTING mask pixels (boundary-only)
-            for pixelIndex in maskPixels {
-                let x = pixelIndex % width
-                let y = pixelIndex / width
-                
-                // Check 4-connected neighbors
-                let neighbors = [
-                    (x, y-1), (x, y+1), (x-1, y), (x+1, y)
-                ]
-                
-                for (nx, ny) in neighbors {
-                    if nx >= 0 && nx < width && ny >= 0 && ny < height {
-                        let neighborIndex = ny * width + nx
-                        if !maskPixels.contains(neighborIndex) {
-                            pixelsToAdd.insert(neighborIndex)
-                        }
-                    }
-                }
-            }
-            
-            // Add boundary neighbors to mask
-            maskPixels.formUnion(pixelsToAdd)
-        }
-        
-        // Convert back to image (only write mask pixels)
-        var expandedMaskData = [UInt8](repeating: 0, count: width * height * 4)
-        for pixelIndex in maskPixels {
-            let dataIndex = pixelIndex * 4
-            expandedMaskData[dataIndex] = 139     // R - brown
-            expandedMaskData[dataIndex + 1] = 69  // G - brown
-            expandedMaskData[dataIndex + 2] = 19  // B - brown
-            expandedMaskData[dataIndex + 3] = 255 // A - opaque
-        }
-        
-        guard let expandedContext = CGContext(
-            data: &expandedMaskData,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: width * 4,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ), let expandedCGImage = expandedContext.makeImage() else {
-            return maskImage
-        }
-        
-        return UIImage(cgImage: expandedCGImage)
+        // MobileSAM already provides good masks - no need to expand
+        // Just return the mask as-is for instant processing
+        return maskImage
     }
 
     // MARK: - Depth Data Delegate
@@ -953,17 +874,11 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
     // MARK: - Mask-based Cropping Function (Add this to CameraManager.swift)
     func cropDepthDataWithMask(_ maskImage: UIImage, imageFrame: CGRect, depthImageSize: CGSize) {
         
-        // Clean up the mask to remove small islands and keep only the largest component
-        guard let cleanedMask = cleanupMask(maskImage) else {
-            presentError("Failed to clean up mask for 3D object.")
+        // Use simple fast expansion instead of the 70-second version
+        guard let expandedMask = simpleExpandMask(maskImage) else {
+            presentError("Failed to expand mask for 3D object.")
             return
         }
-        
-        // Use simple fast expansion instead of the 70-second version
-            guard let expandedMask = simpleExpandMask(cleanedMask) else {
-                presentError("Failed to expand mask for 3D object.")
-                return
-            }
         
         // Save the cropped photo using the mask
         if let photo = capturedPhoto {
