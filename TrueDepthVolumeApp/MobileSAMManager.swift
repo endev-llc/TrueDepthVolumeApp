@@ -460,6 +460,7 @@ class MobileSAMManager: ObservableObject {
                 let index = y * width + x
                 let pixelIndex = index * 4
                 
+                // Check if pixel is part of mask and not yet labeled
                 if maskData[pixelIndex] > 128 && componentLabels[index] == -1 {
                     var componentSize = 0
                     var queue = [index]
@@ -467,6 +468,7 @@ class MobileSAMManager: ObservableObject {
                     
                     componentLabels[index] = currentComponentId
                     
+                    // BFS with pre-allocated queue (faster than stack)
                     while queueIndex < queue.count {
                         let currentIndex = queue[queueIndex]
                         queueIndex += 1
@@ -475,6 +477,7 @@ class MobileSAMManager: ObservableObject {
                         let currentX = currentIndex % width
                         let currentY = currentIndex / width
                         
+                        // Optimized neighbor checking - unrolled loop
                         // Up
                         if currentY > 0 {
                             let neighborIndex = currentIndex - width
@@ -527,6 +530,14 @@ class MobileSAMManager: ObservableObject {
         // Find largest component efficiently
         guard !componentSizes.isEmpty else { return nil }
         
+        // NEW OPTIMIZATION: Skip cleanup if only one component
+        if componentSizes.count == 1 {
+            print("⏱️ Only 1 component - skipping cleanup, returning original")
+            let totalTime = CFAbsoluteTimeGetCurrent() - startTime
+            print("⏱️ TOTAL cleanupMask took: \(String(format: "%.3f", totalTime))s")
+            return maskImage
+        }
+        
         let findStart = CFAbsoluteTimeGetCurrent()
         let largestComponentId = componentSizes.enumerated().max(by: { $0.element < $1.element })!.offset
         let findTime = CFAbsoluteTimeGetCurrent() - findStart
@@ -536,13 +547,14 @@ class MobileSAMManager: ObservableObject {
         let cleanStart = CFAbsoluteTimeGetCurrent()
         var cleanedMaskData = [UInt8](repeating: 0, count: totalPixels * 4)
         
+        // Single pass to create cleaned mask
         for i in 0..<totalPixels {
             if componentLabels[i] == largestComponentId {
                 let pixelIndex = i * 4
-                cleanedMaskData[pixelIndex] = 139
-                cleanedMaskData[pixelIndex + 1] = 69
-                cleanedMaskData[pixelIndex + 2] = 19
-                cleanedMaskData[pixelIndex + 3] = 255
+                cleanedMaskData[pixelIndex] = 139     // R - brown
+                cleanedMaskData[pixelIndex + 1] = 69  // G - brown
+                cleanedMaskData[pixelIndex + 2] = 19  // B - brown
+                cleanedMaskData[pixelIndex + 3] = 255 // A - opaque
             }
         }
         let cleanTime = CFAbsoluteTimeGetCurrent() - cleanStart
