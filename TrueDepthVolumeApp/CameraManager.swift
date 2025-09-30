@@ -1171,18 +1171,14 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
 
     // MARK: - FIXED: Refinement Function (no more 70-second hang)
     func refineWithSecondaryMask(_ secondaryMask: UIImage, imageFrame: CGRect, depthImageSize: CGSize, primaryCroppedCSV: URL) {
-        // Use simple fast expansion instead of the 70-second version
-        guard let expandedMask = simpleExpandMask(secondaryMask) else {
-            presentError("Failed to expand secondary mask.")
-            return
-        }
+        // Refinement masks from MobileSAM are already precise - no expansion needed
+        // This makes refinement instant vs 10+ seconds
         
         // Store the refinement mask for the 3D view
         DispatchQueue.main.async {
-            self.refinementMask = expandedMask
+            self.refinementMask = secondaryMask  // Use mask directly, no expansion
             self.refinementImageFrame = imageFrame
             self.refinementDepthImageSize = depthImageSize
-            // REMOVED: self.show3DView = true  -- AutoFlowOverlayView manages this
         }
     }
 
