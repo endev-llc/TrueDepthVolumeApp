@@ -90,6 +90,7 @@ struct AutoSegmentOverlayView: View {
     // MobileSAM integration
     @StateObject private var samManager = MobileSAMManager()
     @State private var maskImage: UIImage?
+    @State private var maskHistory: [UIImage] = []
     @State private var tapLocation: CGPoint = .zero
     @State private var imageDisplaySize: CGSize = .zero
     @State private var isImageEncoded = false
@@ -101,64 +102,62 @@ struct AutoSegmentOverlayView: View {
             
             VStack {
                 // Header controls
-                HStack {
-                    Button("Cancel") {
-                        onDismiss()
+                HStack(spacing: 20) {
+                    Button(action: { onDismiss() }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title2)
+                            .foregroundColor(.white)
                     }
-                    .foregroundColor(.white)
-                    .padding()
                     
                     Spacer()
                     
-                    Text("Select Primary Object")
+                    Text("Select Primary")
                         .foregroundColor(.white)
                         .font(.headline)
                     
                     Spacer()
                     
-                    if !showingDepthOnly && photo != nil {
-                        Button(showingDepthOnly ? "Show Both" : "Depth Only") {
-                            showingDepthOnly.toggle()
+                    // Undo button
+                    if !maskHistory.isEmpty {
+                        Button(action: { undoLastMask() }) {
+                            Image(systemName: "arrow.uturn.backward.circle.fill")
+                                .font(.title2)
+                                .foregroundColor(.orange)
                         }
-                        .foregroundColor(.white)
-                        .padding()
                     }
                     
-                    // Clear masks button
-                    if maskImage != nil && !showConfirmButton {
-                        Button("Clear") {
-                            maskImage = nil
-                            tapLocation = .zero
+                    // Clear button
+                    if !maskHistory.isEmpty && !showConfirmButton {
+                        Button(action: { clearAllMasks() }) {
+                            Image(systemName: "trash.circle.fill")
+                                .font(.title2)
+                                .foregroundColor(.red)
                         }
-                        .foregroundColor(.red)
-                        .padding(.horizontal)
                     }
                     
+                    // Confirm button
                     if showConfirmButton {
-                        Button("Confirm") {
-                            cropCSVWithMask()
+                        Button(action: { cropCSVWithMask() }) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.title2)
+                                .foregroundColor(.green)
                         }
-                        .foregroundColor(.green)
-                        .padding()
-                    } else if maskImage == nil {
-                        // Placeholder for spacing
-                        Text("")
-                            .padding()
                     }
                 }
+                .padding(.horizontal)
                 .frame(height: 44)
                 
                 // Opacity slider (only show if photo exists and not depth only)
                 if !showingDepthOnly && photo != nil {
                     HStack {
-                        Text("Photo Opacity:")
+                        Image(systemName: "photo")
                             .foregroundColor(.white)
                         Slider(value: $photoOpacity, in: 0...1)
                             .accentColor(.blue)
                         Text("\(Int(photoOpacity * 100))%")
                             .foregroundColor(.white)
                     }
-                    .padding(.horizontal)
+                    .padding(.horizontal, 50)
                 }
                 
                 Spacer()
@@ -268,7 +267,7 @@ struct AutoSegmentOverlayView: View {
         } else if maskImage == nil {
             return "Tap anywhere on the primary object you want to measure."
         } else {
-            return "AI mask applied! Tap more areas to add to mask, or tap 'Confirm' when done."
+            return "AI mask applied! Tap more areas to add to mask, or tap ✓ when done."
         }
     }
     
@@ -282,6 +281,7 @@ struct AutoSegmentOverlayView: View {
     // MARK: - Auto-Segmentation Functions
     private func startAutoSegmentation() {
         maskImage = nil
+        maskHistory = []
         tapLocation = .zero
         showConfirmButton = false
         isImageEncoded = false
@@ -308,12 +308,40 @@ struct AutoSegmentOverlayView: View {
             let mask = await samManager.generateMask(at: relativeLocation, in: imageDisplaySize)
             await MainActor.run {
                 if let mask = mask {
-                    // Composite masks instead of replacing
-                    self.maskImage = compositeMasks(self.maskImage, with: mask)
+                    // Add to history
+                    maskHistory.append(mask)
+                    // Recomposite all masks from history
+                    self.maskImage = recompositeMaskHistory()
                     self.showConfirmButton = true
                 }
             }
         }
+    }
+    
+    private func recompositeMaskHistory() -> UIImage? {
+        guard !maskHistory.isEmpty else { return nil }
+        var result = maskHistory[0]
+        for i in 1..<maskHistory.count {
+            result = compositeMasks(result, with: maskHistory[i])
+        }
+        return result
+    }
+    
+    private func undoLastMask() {
+        guard !maskHistory.isEmpty else { return }
+        maskHistory.removeLast()
+        maskImage = recompositeMaskHistory()
+        if maskHistory.isEmpty {
+            showConfirmButton = false
+            tapLocation = .zero
+        }
+    }
+    
+    private func clearAllMasks() {
+        maskHistory = []
+        maskImage = nil
+        tapLocation = .zero
+        showConfirmButton = false
     }
     
     private func cropCSVWithMask() {
@@ -343,6 +371,7 @@ struct RefinementOverlayView: View {
     // MobileSAM integration
     @StateObject private var samManager = MobileSAMManager()
     @State private var maskImage: UIImage?
+    @State private var maskHistory: [UIImage] = []
     @State private var tapLocation: CGPoint = .zero
     @State private var imageDisplaySize: CGSize = .zero
     @State private var isImageEncoded = false
@@ -354,12 +383,12 @@ struct RefinementOverlayView: View {
             
             VStack {
                 // Header controls
-                HStack {
-                    Button("Cancel") {
-                        onDismiss()
+                HStack(spacing: 20) {
+                    Button(action: { onDismiss() }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title2)
+                            .foregroundColor(.white)
                     }
-                    .foregroundColor(.white)
-                    .padding()
                     
                     Spacer()
                     
@@ -369,32 +398,41 @@ struct RefinementOverlayView: View {
                     
                     Spacer()
                     
-                    HStack(spacing: 10) {
-                        Button("Skip") {
-                            onSkip()
+                    // Skip button
+                    Button(action: { onSkip() }) {
+                        Image(systemName: "forward.circle.fill")
+                            .font(.title2)
+                            .foregroundColor(.gray)
+                    }
+                    
+                    // Undo button
+                    if !maskHistory.isEmpty {
+                        Button(action: { undoLastMask() }) {
+                            Image(systemName: "arrow.uturn.backward.circle.fill")
+                                .font(.title2)
+                                .foregroundColor(.orange)
                         }
-                        .foregroundColor(.gray)
-                        .padding(.horizontal)
-                        
-                        // Clear masks button
-                        if maskImage != nil && !showConfirmButton {
-                            Button("Clear") {
-                                maskImage = nil
-                                tapLocation = .zero
-                            }
-                            .foregroundColor(.red)
-                            .padding(.horizontal)
+                    }
+                    
+                    // Clear button
+                    if !maskHistory.isEmpty && !showConfirmButton {
+                        Button(action: { clearAllMasks() }) {
+                            Image(systemName: "trash.circle.fill")
+                                .font(.title2)
+                                .foregroundColor(.red)
                         }
-                        
-                        if showConfirmButton {
-                            Button("Confirm") {
-                                applyRefinementMask()
-                            }
-                            .foregroundColor(.green)
-                            .padding(.horizontal)
+                    }
+                    
+                    // Confirm button
+                    if showConfirmButton {
+                        Button(action: { applyRefinementMask() }) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.title2)
+                                .foregroundColor(.green)
                         }
                     }
                 }
+                .padding(.horizontal)
                 .frame(height: 44)
                 
                 Spacer()
@@ -464,9 +502,9 @@ struct RefinementOverlayView: View {
         if !isImageEncoded {
             return "Encoding image for refinement..."
         } else if maskImage == nil {
-            return "Tap the food contents you want to isolate, or tap 'Skip' to use the full primary object."
+            return "Tap the food contents you want to isolate, or skip to use the full primary object."
         } else {
-            return "Mask applied! Tap more areas to add, or tap 'Confirm' to apply or 'Skip' to use the full primary object."
+            return "Mask applied! Tap more areas to add, tap ✓ to apply or skip to use full object."
         }
     }
     
@@ -479,6 +517,7 @@ struct RefinementOverlayView: View {
     
     private func startRefinementSegmentation() {
         maskImage = nil
+        maskHistory = []
         tapLocation = .zero
         showConfirmButton = false
         isImageEncoded = false
@@ -507,12 +546,40 @@ struct RefinementOverlayView: View {
             let mask = await samManager.generateMask(at: relativeLocation, in: imageDisplaySize)
             await MainActor.run {
                 if let mask = mask {
-                    // Composite masks instead of replacing
-                    self.maskImage = compositeMasks(self.maskImage, with: mask)
+                    // Add to history
+                    maskHistory.append(mask)
+                    // Recomposite all masks from history
+                    self.maskImage = recompositeMaskHistory()
                     self.showConfirmButton = true
                 }
             }
         }
+    }
+    
+    private func recompositeMaskHistory() -> UIImage? {
+        guard !maskHistory.isEmpty else { return nil }
+        var result = maskHistory[0]
+        for i in 1..<maskHistory.count {
+            result = compositeMasks(result, with: maskHistory[i])
+        }
+        return result
+    }
+    
+    private func undoLastMask() {
+        guard !maskHistory.isEmpty else { return }
+        maskHistory.removeLast()
+        maskImage = recompositeMaskHistory()
+        if maskHistory.isEmpty {
+            showConfirmButton = false
+            tapLocation = .zero
+        }
+    }
+    
+    private func clearAllMasks() {
+        maskHistory = []
+        maskImage = nil
+        tapLocation = .zero
+        showConfirmButton = false
     }
     
     private func applyRefinementMask() {
