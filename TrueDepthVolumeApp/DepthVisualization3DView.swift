@@ -593,7 +593,7 @@ struct DepthVisualization3DView: View {
         return (SCNVector3(minX, minY, minZ), SCNVector3(maxX, maxY, maxZ))
     }
     
-    // HEAVILY OPTIMIZED VOXELIZATION (ULTRA-FAST VERSION)
+    // MARK: - DISTANCE-BASED VOXELIZATION (ACTUALLY WORKS)
     private func createVoxelGeometry(from measurementPoints3D: [SCNVector3], refinementMask: [SCNVector3]? = nil) -> (SCNGeometry, VoxelVolumeInfo) {
         let overallTimer = PerformanceTimer("VOXELIZATION")
         
@@ -601,91 +601,126 @@ struct DepthVisualization3DView: View {
             return (SCNGeometry(), VoxelVolumeInfo(totalVolume: 0.0, voxelCount: 0, voxelSize: 0.0))
         }
         
-        // STEP 1: Calculate grid parameters (REDUCED TARGET FOR SPEED)
+        // STEP 1: Calculate voxel size
         let bbox = calculateBoundingBox(measurementPoints3D)
         let min = bbox.min
         let max = bbox.max
         
         let boundingBoxVolume = (max.x - min.x) * (max.y - min.y) * (max.z - min.z)
+        let pointDensity = Float(measurementPoints3D.count) / boundingBoxVolume
         
-        // CRITICAL: Reduce from 1M to 50K voxels for 20x faster rendering
-        let maxVoxels: Float = 50_000
-        let voxelVolume = boundingBoxVolume / maxVoxels
-        var voxelSize = pow(voxelVolume, 1.0/3.0)
+        // Voxel size based on point density
+        let voxelSize = pow(0.1 / pointDensity, 1.0/3.0)
         
-        var gridX = Int(ceil((max.x - min.x) / voxelSize))
-        var gridY = Int(ceil((max.y - min.y) / voxelSize))
-        var gridZ = Int(ceil((max.z - min.z) / voxelSize))
+        let gridX = Int(ceil((max.x - min.x) / voxelSize))
+        let gridY = Int(ceil((max.y - min.y) / voxelSize))
+        let gridZ = Int(ceil((max.z - min.z) / voxelSize))
         
-        while gridX * gridY * gridZ > Int(maxVoxels) {
-            voxelSize *= 1.01
-            gridX = Int(ceil((max.x - min.x) / voxelSize))
-            gridY = Int(ceil((max.y - min.y) / voxelSize))
-            gridZ = Int(ceil((max.z - min.z) / voxelSize))
-        }
-        overallTimer.lap("Grid params: \(gridX)×\(gridY)×\(gridZ), voxel=\(voxelSize)")
+        print("📊 Grid: \(gridX)×\(gridY)×\(gridZ)")
+        print("📏 Voxel size: \(String(format: "%.2f", voxelSize*1000))mm")
         
-        // STEP 2: Map points to voxels using Set for O(1) operations
-        var surfaceVoxels = Set<VoxelKey>()
-        surfaceVoxels.reserveCapacity(measurementPoints3D.count)
+        overallTimer.lap("Grid calculated")
+        
+        // STEP 2: Build spatial hash for fast point lookups
+        var spatialHash = [VoxelKey: [SCNVector3]]()
         
         for point in measurementPoints3D {
             let vx = Int((point.x - min.x) / voxelSize).clamped(to: 0..<gridX)
             let vy = Int((point.y - min.y) / voxelSize).clamped(to: 0..<gridY)
             let vz = Int((point.z - min.z) / voxelSize).clamped(to: 0..<gridZ)
-            surfaceVoxels.insert(VoxelKey(x: vx, y: vy, z: vz))
+            let key = VoxelKey(x: vx, y: vy, z: vz)
+            
+            if spatialHash[key] == nil {
+                spatialHash[key] = []
+            }
+            spatialHash[key]?.append(point)
         }
-        overallTimer.lap("Mapped \(surfaceVoxels.count) surface voxels")
         
-        // STEP 3: Layer-by-layer flood fill (ULTRA-OPTIMIZED WITH SCANLINE)
+        overallTimer.lap("Built spatial hash: \(spatialHash.count) cells")
+        
+        // STEP 3: Optimized distance-based voxelization
+        let distanceThreshold = voxelSize * 1.5
+        let distanceThresholdSquared = distanceThreshold * distanceThreshold
+        let searchRadius = Int(ceil(distanceThreshold / voxelSize)) + 1  // ADD THIS LINE
+
+        // Build candidate voxels set ONCE
+        var candidateVoxels = Set<VoxelKey>()
+        for (key, _) in spatialHash {
+            for dx in -searchRadius...searchRadius {
+                for dy in -searchRadius...searchRadius {
+                    for dz in -searchRadius...searchRadius {
+                        let vx = key.x + dx
+                        let vy = key.y + dy
+                        let vz = key.z + dz
+                        
+                        if vx >= 0 && vx < gridX && vy >= 0 && vy < gridY && vz >= 0 && vz < gridZ {
+                            candidateVoxels.insert(VoxelKey(x: vx, y: vy, z: vz))
+                        }
+                    }
+                }
+            }
+        }
+
+        let candidateArray = Array(candidateVoxels)
         var filledVoxels = Set<VoxelKey>()
-        filledVoxels.reserveCapacity(surfaceVoxels.count * 2)
-        
-        // Group surface voxels by Z layer
-        var layerVoxels = [Int: [(x: Int, y: Int)]]()
-        for voxel in surfaceVoxels {
-            if layerVoxels[voxel.z] == nil {
-                layerVoxels[voxel.z] = []
+        let lock = NSLock()
+
+        DispatchQueue.concurrentPerform(iterations: candidateArray.count) { index in
+            let testKey = candidateArray[index]
+            
+            let voxelCenterX = min.x + (Float(testKey.x) + 0.5) * voxelSize
+            let voxelCenterY = min.y + (Float(testKey.y) + 0.5) * voxelSize
+            let voxelCenterZ = min.z + (Float(testKey.z) + 0.5) * voxelSize
+            
+            // Check nearby cells for points
+            let cellX = Int((voxelCenterX - min.x) / voxelSize)
+            let cellY = Int((voxelCenterY - min.y) / voxelSize)
+            let cellZ = Int((voxelCenterZ - min.z) / voxelSize)
+            
+            var foundNearbyPoint = false
+            
+            for ndx in -1...1 {
+                for ndy in -1...1 {
+                    for ndz in -1...1 {
+                        let neighborKey = VoxelKey(x: cellX + ndx, y: cellY + ndy, z: cellZ + ndz)
+                        
+                        if let points = spatialHash[neighborKey] {
+                            for point in points {
+                                let dx = voxelCenterX - point.x
+                                let dy = voxelCenterY - point.y
+                                let dz = voxelCenterZ - point.z
+                                let distSquared = dx*dx + dy*dy + dz*dz
+                                
+                                if distSquared <= distanceThresholdSquared {
+                                    foundNearbyPoint = true
+                                    break
+                                }
+                            }
+                            if foundNearbyPoint { break }
+                        }
+                    }
+                    if foundNearbyPoint { break }
+                }
+                if foundNearbyPoint { break }
             }
-            layerVoxels[voxel.z]?.append((x: voxel.x, y: voxel.y))
+            
+            if foundNearbyPoint {
+                lock.lock()
+                filledVoxels.insert(testKey)
+                lock.unlock()
+            }
         }
         
-        // Process each Z layer with FAST scanline fill
-        for z in layerVoxels.keys.sorted() {
-            guard let layerSurface = layerVoxels[z], layerSurface.count >= 3 else { continue }
-            
-            // Get convex hull (fast)
-            let hull = fastConvexHull2D(layerSurface)
-            
-            if hull.count >= 3 {
-                let minX = layerSurface.map { $0.x }.min()!
-                let maxX = layerSurface.map { $0.x }.max()!
-                let minY = layerSurface.map { $0.y }.min()!
-                let maxY = layerSurface.map { $0.y }.max()!
-                
-                // Use scanline algorithm instead of point-by-point checking
-                scanlineFillPolygon(hull, minX: minX, maxX: maxX, minY: minY, maxY: maxY, z: z, filledVoxels: &filledVoxels)
-            }
-        }
-        
-        // Add all surface voxels to ensure boundaries are included
-        filledVoxels.formUnion(surfaceVoxels)
-        overallTimer.lap("Filled \(filledVoxels.count) total voxels")
+        overallTimer.lap("Filled \(filledVoxels.count) voxels by distance")
         
         // STEP 4: Apply refinement mask if provided
         if let refinementPoints = refinementMask, !refinementPoints.isEmpty {
-            let tolerance: Float = voxelSize * 1.5
             var refinementXYSet = Set<XYKey>()
             
             for point in refinementPoints {
                 let gridX = Int((point.x - min.x) / voxelSize)
                 let gridY = Int((point.y - min.y) / voxelSize)
-                
-                for dx in -1...1 {
-                    for dy in -1...1 {
-                        refinementXYSet.insert(XYKey(x: gridX + dx, y: gridY + dy))
-                    }
-                }
+                refinementXYSet.insert(XYKey(x: gridX, y: gridY))
             }
             
             filledVoxels = filledVoxels.filter { voxel in
@@ -703,7 +738,7 @@ struct DepthVisualization3DView: View {
         let totalVolumeM3 = Double(filledVoxels.count) * singleVoxelVolume
         let volumeInfo = VoxelVolumeInfo(totalVolume: totalVolumeM3, voxelCount: filledVoxels.count, voxelSize: voxelSize)
         
-        // STEP 6: Create geometry (BATCHED AND OPTIMIZED)
+        // STEP 6: Create geometry
         let geometry = createVoxelGeometryOptimized(voxels: filledVoxels, voxelSize: voxelSize, min: min, max: max)
         overallTimer.lap("Created SCNGeometry")
         
