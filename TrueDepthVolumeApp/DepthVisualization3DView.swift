@@ -593,7 +593,7 @@ struct DepthVisualization3DView: View {
         return (SCNVector3(minX, minY, minZ), SCNVector3(maxX, maxY, maxZ))
     }
     
-    // MARK: - DISTANCE-BASED VOXELIZATION (ACTUALLY WORKS)
+    // MARK: - DISTANCE-BASED VOXELIZATION WITH RAY-CAST INTERIOR FILL
     private func createVoxelGeometry(from measurementPoints3D: [SCNVector3], refinementMask: [SCNVector3]? = nil) -> (SCNGeometry, VoxelVolumeInfo) {
         let overallTimer = PerformanceTimer("VOXELIZATION")
         
@@ -609,7 +609,6 @@ struct DepthVisualization3DView: View {
         let boundingBoxVolume = (max.x - min.x) * (max.y - min.y) * (max.z - min.z)
         let pointDensity = Float(measurementPoints3D.count) / boundingBoxVolume
         
-        // Voxel size based on point density
         let voxelSize = pow(0.1 / pointDensity, 1.0/3.0)
         
         let gridX = Int(ceil((max.x - min.x) / voxelSize))
@@ -621,7 +620,7 @@ struct DepthVisualization3DView: View {
         
         overallTimer.lap("Grid calculated")
         
-        // STEP 2: Build spatial hash for fast point lookups
+        // STEP 2: Build spatial hash
         var spatialHash = [VoxelKey: [SCNVector3]]()
         
         for point in measurementPoints3D {
@@ -638,12 +637,11 @@ struct DepthVisualization3DView: View {
         
         overallTimer.lap("Built spatial hash: \(spatialHash.count) cells")
         
-        // STEP 3: Optimized distance-based voxelization
+        // STEP 3: Surface voxel detection
         let distanceThreshold = voxelSize * 1.5
         let distanceThresholdSquared = distanceThreshold * distanceThreshold
-        let searchRadius = Int(ceil(distanceThreshold / voxelSize)) + 1  // ADD THIS LINE
+        let searchRadius = Int(ceil(distanceThreshold / voxelSize)) + 1
 
-        // Build candidate voxels set ONCE
         var candidateVoxels = Set<VoxelKey>()
         for (key, _) in spatialHash {
             for dx in -searchRadius...searchRadius {
@@ -662,7 +660,7 @@ struct DepthVisualization3DView: View {
         }
 
         let candidateArray = Array(candidateVoxels)
-        var filledVoxels = Set<VoxelKey>()
+        var surfaceVoxels = Set<VoxelKey>()
         let lock = NSLock()
 
         DispatchQueue.concurrentPerform(iterations: candidateArray.count) { index in
@@ -672,7 +670,6 @@ struct DepthVisualization3DView: View {
             let voxelCenterY = min.y + (Float(testKey.y) + 0.5) * voxelSize
             let voxelCenterZ = min.z + (Float(testKey.z) + 0.5) * voxelSize
             
-            // Check nearby cells for points
             let cellX = Int((voxelCenterX - min.x) / voxelSize)
             let cellY = Int((voxelCenterY - min.y) / voxelSize)
             let cellZ = Int((voxelCenterZ - min.z) / voxelSize)
@@ -706,14 +703,19 @@ struct DepthVisualization3DView: View {
             
             if foundNearbyPoint {
                 lock.lock()
-                filledVoxels.insert(testKey)
+                surfaceVoxels.insert(testKey)
                 lock.unlock()
             }
         }
         
-        overallTimer.lap("Filled \(filledVoxels.count) voxels by distance")
+        overallTimer.lap("Filled \(surfaceVoxels.count) SURFACE voxels (PRESERVED)")
         
-        // STEP 4: Apply refinement mask if provided
+        // STEP 4: Ray-cast interior fill (respects surface boundary)
+        let filledVoxels = fillInteriorRayCast(surfaceVoxels: surfaceVoxels, gridX: gridX, gridY: gridY, gridZ: gridZ)
+        overallTimer.lap("Interior fill complete: \(filledVoxels.count) total voxels")
+        
+        // STEP 5: Apply refinement mask
+        var finalVoxels = filledVoxels
         if let refinementPoints = refinementMask, !refinementPoints.isEmpty {
             var refinementXYSet = Set<XYKey>()
             
@@ -723,26 +725,154 @@ struct DepthVisualization3DView: View {
                 refinementXYSet.insert(XYKey(x: gridX, y: gridY))
             }
             
-            filledVoxels = filledVoxels.filter { voxel in
+            finalVoxels = finalVoxels.filter { voxel in
                 refinementXYSet.contains(XYKey(x: voxel.x, y: voxel.y))
             }
-            overallTimer.lap("Applied refinement: \(filledVoxels.count) voxels remain")
+            overallTimer.lap("Applied refinement: \(finalVoxels.count) voxels remain")
         }
         
-        guard !filledVoxels.isEmpty else {
+        guard !finalVoxels.isEmpty else {
             return (SCNGeometry(), VoxelVolumeInfo(totalVolume: 0.0, voxelCount: 0, voxelSize: 0.0))
         }
         
-        // STEP 5: Calculate volume
+        // STEP 6: Calculate volume
         let singleVoxelVolume = Double(voxelSize * voxelSize * voxelSize)
-        let totalVolumeM3 = Double(filledVoxels.count) * singleVoxelVolume
-        let volumeInfo = VoxelVolumeInfo(totalVolume: totalVolumeM3, voxelCount: filledVoxels.count, voxelSize: voxelSize)
+        let totalVolumeM3 = Double(finalVoxels.count) * singleVoxelVolume
+        let volumeInfo = VoxelVolumeInfo(totalVolume: totalVolumeM3, voxelCount: finalVoxels.count, voxelSize: voxelSize)
         
-        // STEP 6: Create geometry
-        let geometry = createVoxelGeometryOptimized(voxels: filledVoxels, voxelSize: voxelSize, min: min, max: max)
+        // STEP 7: Create geometry
+        let geometry = createVoxelGeometryOptimized(voxels: finalVoxels, voxelSize: voxelSize, min: min, max: max)
         overallTimer.lap("Created SCNGeometry")
         
         return (geometry, volumeInfo)
+    }
+
+    // MARK: - Ray-Cast Interior Fill (Preserves Surface Detail)
+    private func fillInteriorRayCast(surfaceVoxels: Set<VoxelKey>, gridX: Int, gridY: Int, gridZ: Int) -> Set<VoxelKey> {
+        let timer = PerformanceTimer("Ray-Cast Interior Fill")
+        
+        // Find bounding box of surface voxels
+        let minX = surfaceVoxels.map { $0.x }.min() ?? 0
+        let maxX = surfaceVoxels.map { $0.x }.max() ?? 0
+        let minY = surfaceVoxels.map { $0.y }.min() ?? 0
+        let maxY = surfaceVoxels.map { $0.y }.max() ?? 0
+        let minZ = surfaceVoxels.map { $0.z }.min() ?? 0
+        let maxZ = surfaceVoxels.map { $0.z }.max() ?? 0
+        
+        print("Surface bbox: X[\(minX)-\(maxX)] Y[\(minY)-\(maxY)] Z[\(minZ)-\(maxZ)]")
+        
+        // Build fast lookup set
+        let surfaceSet = surfaceVoxels
+        
+        var allVoxels = surfaceVoxels
+        var interiorCount = 0
+        let lock = NSLock()
+        
+        // Generate candidate interior positions (only within surface bounds)
+        var candidates: [VoxelKey] = []
+        for x in (minX + 1)..<maxX {
+            for y in (minY + 1)..<maxY {
+                for z in (minZ + 1)..<maxZ {
+                    let key = VoxelKey(x: x, y: y, z: z)
+                    if !surfaceSet.contains(key) {
+                        candidates.append(key)
+                    }
+                }
+            }
+        }
+        
+        timer.lap("Generated \(candidates.count) candidate positions")
+        
+        // Parallel ray-cast check
+        DispatchQueue.concurrentPerform(iterations: candidates.count) { index in
+            let candidate = candidates[index]
+            
+            // Cast 6 rays (±X, ±Y, ±Z directions)
+            var allRaysHitSurface = true
+            
+            // Ray +X
+            var hitSurface = false
+//            for testX in (candidate.x + 1)...maxX {
+//                if surfaceSet.contains(VoxelKey(x: testX, y: candidate.y, z: candidate.z)) {
+//                    hitSurface = true
+//                    break
+//                }
+//            }
+//            if !hitSurface { allRaysHitSurface = false }
+//            
+//            // Ray -X
+//            if allRaysHitSurface {
+//                hitSurface = false
+//                for testX in stride(from: candidate.x - 1, through: minX, by: -1) {
+//                    if surfaceSet.contains(VoxelKey(x: testX, y: candidate.y, z: candidate.z)) {
+//                        hitSurface = true
+//                        break
+//                    }
+//                }
+//                if !hitSurface { allRaysHitSurface = false }
+//            }
+//            
+//            // Ray +Y
+//            if allRaysHitSurface {
+//                hitSurface = false
+//                for testY in (candidate.y + 1)...maxY {
+//                    if surfaceSet.contains(VoxelKey(x: candidate.x, y: testY, z: candidate.z)) {
+//                        hitSurface = true
+//                        break
+//                    }
+//                }
+//                if !hitSurface { allRaysHitSurface = false }
+//            }
+//            
+//            // Ray -Y
+//            if allRaysHitSurface {
+//                hitSurface = false
+//                for testY in stride(from: candidate.y - 1, through: minY, by: -1) {
+//                    if surfaceSet.contains(VoxelKey(x: candidate.x, y: testY, z: candidate.z)) {
+//                        hitSurface = true
+//                        break
+//                    }
+//                }
+//                if !hitSurface { allRaysHitSurface = false }
+//            }
+            
+//            // Ray +Z
+//            if allRaysHitSurface {
+//                hitSurface = false
+//                for testZ in (candidate.z + 1)...maxZ {
+//                    if surfaceSet.contains(VoxelKey(x: candidate.x, y: candidate.y, z: testZ)) {
+//                        hitSurface = true
+//                        break
+//                    }
+//                }
+//                if !hitSurface { allRaysHitSurface = false }
+//            }
+            
+            // Ray -Z
+            if allRaysHitSurface {
+                hitSurface = false
+                for testZ in stride(from: candidate.z - 1, through: minZ, by: -1) {
+                    if surfaceSet.contains(VoxelKey(x: candidate.x, y: candidate.y, z: testZ)) {
+                        hitSurface = true
+                        break
+                    }
+                }
+                if !hitSurface { allRaysHitSurface = false }
+            }
+            
+            // If all 6 rays hit surface, this voxel is interior
+            if allRaysHitSurface {
+                lock.lock()
+                allVoxels.insert(candidate)
+                interiorCount += 1
+                lock.unlock()
+            }
+        }
+        
+        timer.lap("Ray-cast complete")
+        print("Surface: \(surfaceVoxels.count), Interior: \(interiorCount), Total: \(allVoxels.count)")
+        
+        return allVoxels
     }
     
     // OPTIMIZED: Fast convex hull using Andrew's monotone chain (O(n log n))
