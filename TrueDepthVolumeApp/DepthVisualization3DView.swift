@@ -55,6 +55,7 @@ struct DepthVisualization3DView: View {
     @State private var voxelNode: SCNNode?
     @State private var primaryPointCloudNode: SCNNode?
     @State private var refinementPointCloudNode: SCNNode?
+    @State private var bottomSurfaceNode: SCNNode?
     
     var body: some View {
         ZStack {
@@ -183,8 +184,14 @@ struct DepthVisualization3DView: View {
         guard let voxelNode = voxelNode else { return }
         if show {
             scene?.rootNode.addChildNode(voxelNode)
+            // Also add bottom surface if it exists
+            if let bottomSurfaceNode = bottomSurfaceNode {
+                scene?.rootNode.addChildNode(bottomSurfaceNode)
+            }
         } else {
             voxelNode.removeFromParentNode()
+            // Also remove bottom surface if it exists
+            bottomSurfaceNode?.removeFromParentNode()
         }
     }
     
@@ -520,7 +527,7 @@ struct DepthVisualization3DView: View {
         if let refPoints = refinementMeasurementPoints3D {
             let refinementPointCloudGeometry = createPointCloudGeometry(from: refPoints)
             let refinementPointCloudNodeInstance = SCNNode(geometry: refinementPointCloudGeometry)
-            let (_, refinementVolumeInfo) = createVoxelGeometry(from: refPoints)
+            let (_, refinementVolumeInfo) = createVoxelGeometry(from: refPoints, createBottomSurface: false)
             
             DispatchQueue.main.async {
                 self.refinementVolume = refinementVolumeInfo.totalVolume
@@ -594,7 +601,7 @@ struct DepthVisualization3DView: View {
     }
     
     // MARK: - DISTANCE-BASED VOXELIZATION WITH RAY-CAST INTERIOR FILL
-    private func createVoxelGeometry(from measurementPoints3D: [SCNVector3], refinementMask: [SCNVector3]? = nil) -> (SCNGeometry, VoxelVolumeInfo) {
+    private func createVoxelGeometry(from measurementPoints3D: [SCNVector3], refinementMask: [SCNVector3]? = nil, createBottomSurface: Bool = true) -> (SCNGeometry, VoxelVolumeInfo) {
         let overallTimer = PerformanceTimer("VOXELIZATION")
         
         guard !measurementPoints3D.isEmpty else {
@@ -740,7 +747,22 @@ struct DepthVisualization3DView: View {
         let totalVolumeM3 = Double(finalVoxels.count) * singleVoxelVolume
         let volumeInfo = VoxelVolumeInfo(totalVolume: totalVolumeM3, voxelCount: finalVoxels.count, voxelSize: voxelSize)
         
-        // STEP 7: Create geometry
+        // STEP 7: Create bottom closing surface (only for primary, not refinement)
+        if createBottomSurface {
+            if let bottomGeometry = createBottomClosingSurface(points: measurementPoints3D, voxelSize: voxelSize, min: min, max: max) {
+                let bottomSurfaceNodeInstance = SCNNode(geometry: bottomGeometry)
+                
+                DispatchQueue.main.async {
+                    self.bottomSurfaceNode = bottomSurfaceNodeInstance
+                    if self.showVoxels {
+                        self.scene?.rootNode.addChildNode(bottomSurfaceNodeInstance)
+                    }
+                }
+                overallTimer.lap("Created bottom surface")
+            }
+        }
+        
+        // STEP 8: Create geometry (was STEP 7)
         let geometry = createVoxelGeometryOptimized(voxels: finalVoxels, voxelSize: voxelSize, min: min, max: max)
         overallTimer.lap("Created SCNGeometry")
         
@@ -873,6 +895,92 @@ struct DepthVisualization3DView: View {
         print("Surface: \(surfaceVoxels.count), Interior: \(interiorCount), Total: \(allVoxels.count)")
         
         return allVoxels
+    }
+    
+    // MARK: - Bottom Surface Creation
+    private func createBottomClosingSurface(points: [SCNVector3], voxelSize: Float, min: SCNVector3, max: SCNVector3) -> SCNGeometry? {
+        guard !points.isEmpty else { return nil }
+        
+        // Convert points to grid coordinates for grouping
+        var gridPoints: [(x: Int, y: Int, z: Float)] = []
+        for point in points {
+            let gridX = Int((point.x - min.x) / voxelSize)
+            let gridY = Int((point.y - min.y) / voxelSize)
+            gridPoints.append((x: gridX, y: gridY, z: point.z))
+        }
+        
+        // Build a map of (x,y) -> maximum z for each column
+        var maxZMap: [XYKey: Float] = [:]
+        for gridPoint in gridPoints {
+            let key = XYKey(x: gridPoint.x, y: gridPoint.y)
+            if let existingZ = maxZMap[key] {
+                maxZMap[key] = Swift.max(existingZ, gridPoint.z)
+            } else {
+                maxZMap[key] = gridPoint.z
+            }
+        }
+        
+        // Get unique XY coordinates
+        var xyPoints: [(x: Int, y: Int)] = []
+        for (key, _) in maxZMap {
+            xyPoints.append((x: key.x, y: key.y))
+        }
+        
+        // Find convex hull to get perimeter
+        let hull = fastConvexHull2D(xyPoints)
+        guard hull.count >= 3 else { return nil }
+        
+        // Convert to 3D coordinates using ACTUAL Z values from the points
+        var vertices: [SCNVector3] = []
+        for point in hull {
+            let x = min.x + (Float(point.x) + 0.5) * voxelSize
+            let y = min.y + (Float(point.y) + 0.5) * voxelSize
+            
+            // Get the actual Z value for this XY position from point cloud
+            let key = XYKey(x: point.x, y: point.y)
+            let pointZ = maxZMap[key] ?? min.z
+            let z = pointZ + voxelSize // Offset to place it just below the points
+            
+            vertices.append(SCNVector3(x, y, z))
+        }
+        
+        // Triangulate using fan triangulation from first vertex
+        var indices: [UInt32] = []
+        for i in 1..<(vertices.count - 1) {
+            indices.append(0)
+            indices.append(UInt32(i))
+            indices.append(UInt32(i + 1))
+        }
+        
+        // Create geometry
+        let vertexData = Data(bytes: vertices, count: vertices.count * MemoryLayout<SCNVector3>.size)
+        let vertexSource = SCNGeometrySource(
+            data: vertexData,
+            semantic: .vertex,
+            vectorCount: vertices.count,
+            usesFloatComponents: true,
+            componentsPerVector: 3,
+            bytesPerComponent: MemoryLayout<Float>.size,
+            dataOffset: 0,
+            dataStride: MemoryLayout<SCNVector3>.size
+        )
+        
+        let indexData = Data(bytes: indices, count: indices.count * MemoryLayout<UInt32>.size)
+        let element = SCNGeometryElement(
+            data: indexData,
+            primitiveType: .triangles,
+            primitiveCount: indices.count / 3,
+            bytesPerIndex: MemoryLayout<UInt32>.size
+        )
+        
+        let geometry = SCNGeometry(sources: [vertexSource], elements: [element])
+        let material = SCNMaterial()
+        material.diffuse.contents = UIColor(red: 0.2, green: 0.8, blue: 0.4, alpha: 0.8)
+        material.lightingModel = .lambert
+        material.isDoubleSided = true
+        geometry.materials = [material]
+        
+        return geometry
     }
     
     // OPTIMIZED: Fast convex hull using Andrew's monotone chain (O(n log n))
