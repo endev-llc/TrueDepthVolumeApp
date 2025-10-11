@@ -56,6 +56,8 @@ struct DepthVisualization3DView: View {
     @State private var primaryPointCloudNode: SCNNode?
     @State private var refinementPointCloudNode: SCNNode?
     @State private var bottomSurfaceNode: SCNNode?
+    @State private var boundingBoxNode: SCNNode?
+    @State private var showBoundingBox: Bool = true
     
     var body: some View {
         ZStack {
@@ -121,6 +123,14 @@ struct DepthVisualization3DView: View {
                                     toggleRefinementPointCloudVisibility(show: newValue)
                                 }
                         }
+                        
+                        Toggle("Bounding Box", isOn: $showBoundingBox)
+                            .foregroundColor(.yellow)
+                            .font(.caption)
+                            .toggleStyle(SwitchToggleStyle(tint: .yellow))
+                            .onChange(of: showBoundingBox) { _, newValue in
+                                toggleBoundingBoxVisibility(show: newValue)
+                            }
                     }
                     .padding()
                 }
@@ -210,6 +220,15 @@ struct DepthVisualization3DView: View {
             scene?.rootNode.addChildNode(refinementPointCloudNode)
         } else {
             refinementPointCloudNode.removeFromParentNode()
+        }
+    }
+    
+    private func toggleBoundingBoxVisibility(show: Bool) {
+        guard let boundingBoxNode = boundingBoxNode else { return }
+        if show {
+            scene?.rootNode.addChildNode(boundingBoxNode)
+        } else {
+            boundingBoxNode.removeFromParentNode()
         }
     }
     
@@ -507,6 +526,11 @@ struct DepthVisualization3DView: View {
         
         let primaryVoxelNodeInstance = SCNNode(geometry: primaryVoxelGeometry)
         
+        // Create bounding box
+        let bboxGeometry = createBoundingBoxGeometry(min: SCNVector3(combinedBbox.min.x - center.x, combinedBbox.min.y - center.y, combinedBbox.min.z - center.z),
+                                                      max: SCNVector3(combinedBbox.max.x - center.x, combinedBbox.max.y - center.y, combinedBbox.max.z - center.z))
+        let boundingBoxNodeInstance = SCNNode(geometry: bboxGeometry)
+        
         // Update UI
         DispatchQueue.main.async {
             self.totalVolume = primaryVolumeInfo.totalVolume
@@ -514,6 +538,7 @@ struct DepthVisualization3DView: View {
             self.voxelSize = primaryVolumeInfo.voxelSize
             self.voxelNode = primaryVoxelNodeInstance
             self.primaryPointCloudNode = primaryPointCloudNodeInstance
+            self.boundingBoxNode = boundingBoxNodeInstance
         }
         
         if showPrimaryPointCloud {
@@ -521,6 +546,9 @@ struct DepthVisualization3DView: View {
         }
         if showVoxels {
             scene.rootNode.addChildNode(primaryVoxelNodeInstance)
+        }
+        if showBoundingBox {
+            scene.rootNode.addChildNode(boundingBoxNodeInstance)
         }
         
         // Refinement if exists
@@ -821,7 +849,7 @@ struct DepthVisualization3DView: View {
 //                }
 //            }
 //            if !hitSurface { allRaysHitSurface = false }
-//            
+//
 //            // Ray -X
 //            if allRaysHitSurface {
 //                hitSurface = false
@@ -833,7 +861,7 @@ struct DepthVisualization3DView: View {
 //                }
 //                if !hitSurface { allRaysHitSurface = false }
 //            }
-//            
+//
 //            // Ray +Y
 //            if allRaysHitSurface {
 //                hitSurface = false
@@ -845,7 +873,7 @@ struct DepthVisualization3DView: View {
 //                }
 //                if !hitSurface { allRaysHitSurface = false }
 //            }
-//            
+//
 //            // Ray -Y
 //            if allRaysHitSurface {
 //                hitSurface = false
@@ -1244,6 +1272,55 @@ struct DepthVisualization3DView: View {
         let material = SCNMaterial()
         material.lightingModel = .constant
         material.isDoubleSided = true
+        geometry.materials = [material]
+        
+        return geometry
+    }
+    
+    private func createBoundingBoxGeometry(min: SCNVector3, max: SCNVector3) -> SCNGeometry {
+        // 8 corners of the bounding box
+        let corners: [SCNVector3] = [
+            SCNVector3(min.x, min.y, min.z), // 0
+            SCNVector3(max.x, min.y, min.z), // 1
+            SCNVector3(max.x, max.y, min.z), // 2
+            SCNVector3(min.x, max.y, min.z), // 3
+            SCNVector3(min.x, min.y, max.z), // 4
+            SCNVector3(max.x, min.y, max.z), // 5
+            SCNVector3(max.x, max.y, max.z), // 6
+            SCNVector3(min.x, max.y, max.z)  // 7
+        ]
+        
+        // 12 edges of the box (as pairs of vertex indices)
+        let edges: [UInt32] = [
+            0, 1,  1, 2,  2, 3,  3, 0,  // Bottom face
+            4, 5,  5, 6,  6, 7,  7, 4,  // Top face
+            0, 4,  1, 5,  2, 6,  3, 7   // Vertical edges
+        ]
+        
+        let vertexData = Data(bytes: corners, count: corners.count * MemoryLayout<SCNVector3>.size)
+        let vertexSource = SCNGeometrySource(
+            data: vertexData,
+            semantic: .vertex,
+            vectorCount: corners.count,
+            usesFloatComponents: true,
+            componentsPerVector: 3,
+            bytesPerComponent: MemoryLayout<Float>.size,
+            dataOffset: 0,
+            dataStride: MemoryLayout<SCNVector3>.size
+        )
+        
+        let indexData = Data(bytes: edges, count: edges.count * MemoryLayout<UInt32>.size)
+        let element = SCNGeometryElement(
+            data: indexData,
+            primitiveType: .line,
+            primitiveCount: edges.count / 2,
+            bytesPerIndex: MemoryLayout<UInt32>.size
+        )
+        
+        let geometry = SCNGeometry(sources: [vertexSource], elements: [element])
+        let material = SCNMaterial()
+        material.diffuse.contents = UIColor.yellow
+        material.lightingModel = .constant
         geometry.materials = [material]
         
         return geometry
