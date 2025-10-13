@@ -58,6 +58,8 @@ struct DepthVisualization3DView: View {
     @State private var bottomSurfaceNode: SCNNode?
     @State private var boundingBoxNode: SCNNode?
     @State private var showBoundingBox: Bool = true
+    @State private var showHullVisualization: Bool = true
+    @State private var hullVisualizationNode: SCNNode?
     
     var body: some View {
         ZStack {
@@ -130,6 +132,14 @@ struct DepthVisualization3DView: View {
                             .toggleStyle(SwitchToggleStyle(tint: .yellow))
                             .onChange(of: showBoundingBox) { _, newValue in
                                 toggleBoundingBoxVisibility(show: newValue)
+                            }
+                        
+                        Toggle("Hull Floor", isOn: $showHullVisualization)
+                            .foregroundColor(.pink)
+                            .font(.caption)
+                            .toggleStyle(SwitchToggleStyle(tint: .pink))
+                            .onChange(of: showHullVisualization) { _, newValue in
+                                toggleHullVisualizationVisibility(show: newValue)
                             }
                     }
                     .padding()
@@ -229,6 +239,15 @@ struct DepthVisualization3DView: View {
             scene?.rootNode.addChildNode(boundingBoxNode)
         } else {
             boundingBoxNode.removeFromParentNode()
+        }
+    }
+    
+    private func toggleHullVisualizationVisibility(show: Bool) {
+        guard let hullVisualizationNode = hullVisualizationNode else { return }
+        if show {
+            scene?.rootNode.addChildNode(hullVisualizationNode)
+        } else {
+            hullVisualizationNode.removeFromParentNode()
         }
     }
     
@@ -746,8 +765,20 @@ struct DepthVisualization3DView: View {
         overallTimer.lap("Filled \(surfaceVoxels.count) SURFACE voxels (PRESERVED)")
         
         // STEP 4: Ray-cast interior fill (respects surface boundary)
-        let filledVoxels = fillInteriorRayCast(surfaceVoxels: surfaceVoxels, gridX: gridX, gridY: gridY, gridZ: gridZ)
+        let (filledVoxels, hullGeometry) = fillInteriorRayCast(surfaceVoxels: surfaceVoxels, gridX: gridX, gridY: gridY, gridZ: gridZ, voxelSize: voxelSize, min: min)
         overallTimer.lap("Interior fill complete: \(filledVoxels.count) total voxels")
+        
+        // Add hull visualization to scene
+        if let hullGeometry = hullGeometry {
+            let hullNodeInstance = SCNNode(geometry: hullGeometry)
+            DispatchQueue.main.async {
+                self.hullVisualizationNode = hullNodeInstance
+                if self.showHullVisualization {
+                    self.scene?.rootNode.addChildNode(hullNodeInstance)
+                }
+            }
+            overallTimer.lap("Added hull visualization")
+        }
         
         // STEP 5: Apply refinement mask
         var finalVoxels = filledVoxels
@@ -798,8 +829,76 @@ struct DepthVisualization3DView: View {
     }
 
     // MARK: - Ray-Cast Interior Fill (Preserves Surface Detail)
-    private func fillInteriorRayCast(surfaceVoxels: Set<VoxelKey>, gridX: Int, gridY: Int, gridZ: Int) -> Set<VoxelKey> {
+    private func fillInteriorRayCast(surfaceVoxels: Set<VoxelKey>, gridX: Int, gridY: Int, gridZ: Int, voxelSize: Float, min: SCNVector3) -> (voxels: Set<VoxelKey>, hullGeometry: SCNGeometry?) {
         let timer = PerformanceTimer("Ray-Cast Interior Fill")
+        
+        // STEP 1: Build maxZMap from surface voxels (same logic as createBottomClosingSurface)
+        print("🔍 Computing hull from surface voxels...")
+        var maxZMap: [XYKey: Int] = [:]
+        for voxel in surfaceVoxels {
+            let key = XYKey(x: voxel.x, y: voxel.y)
+            if let existingZ = maxZMap[key] {
+                maxZMap[key] = Swift.max(existingZ, voxel.z)
+            } else {
+                maxZMap[key] = voxel.z
+            }
+        }
+        
+        // STEP 2: Get unique XY coordinates
+        var xyPoints: [(x: Int, y: Int)] = []
+        for (key, _) in maxZMap {
+            xyPoints.append((x: key.x, y: key.y))
+        }
+        
+        // STEP 3: Compute convex hull (same as createBottomClosingSurface)
+        let hull = fastConvexHull2D(xyPoints)
+        print("🔷 Computed hull with \(hull.count) points")
+        timer.lap("Computed hull")
+        
+        // STEP 4: Build floor Z map for all XY positions inside the hull
+        var floorZMap: [XYKey: Int] = [:]
+        
+        // Get hull bounding box
+        let hullMinX = hull.map { $0.x }.min() ?? 0
+        let hullMaxX = hull.map { $0.x }.max() ?? 0
+        let hullMinY = hull.map { $0.y }.min() ?? 0
+        let hullMaxY = hull.map { $0.y }.max() ?? 0
+        
+        // For each XY position in hull bounding box, check if inside hull and store its Z
+        for x in hullMinX...hullMaxX {
+            for y in hullMinY...hullMaxY {
+                if isPointInsidePolygon(x: x, y: y, polygon: hull) {
+                    let key = XYKey(x: x, y: y)
+                    // Use the maxZ from surface voxels at this XY
+                    if let surfaceZ = maxZMap[key] {
+                        floorZMap[key] = surfaceZ
+                    } else {
+                        // Interpolate from nearest hull points if no direct surface voxel
+                        var nearestZ = 0
+                        var minDist = Float.infinity
+                        for hullPoint in hull {
+                            let dx = Float(x - hullPoint.x)
+                            let dy = Float(y - hullPoint.y)
+                            let dist = sqrt(dx * dx + dy * dy)
+                            if dist < minDist {
+                                minDist = dist
+                                if let z = maxZMap[XYKey(x: hullPoint.x, y: hullPoint.y)] {
+                                    nearestZ = z
+                                }
+                            }
+                        }
+                        floorZMap[key] = nearestZ
+                    }
+                }
+            }
+        }
+        
+        print("🗺️ Floor Z map covers \(floorZMap.count) XY positions")
+        timer.lap("Built floor Z map")
+        
+        // STEP 5: Create hull visualization geometry
+        let hullGeometry = createHullVisualizationGeometry(hull: hull, maxZMap: maxZMap, voxelSize: voxelSize, min: min)
+        timer.lap("Created hull visualization")
         
         // Find bounding box of surface voxels
         let minX = surfaceVoxels.map { $0.x }.min() ?? 0
@@ -809,7 +908,7 @@ struct DepthVisualization3DView: View {
         let minZ = surfaceVoxels.map { $0.z }.min() ?? 0
         let maxZ = surfaceVoxels.map { $0.z }.max() ?? 0
         
-        print("Surface bbox: X[\(minX)-\(maxX)] Y[\(minY)-\(maxY)] Z[\(minZ)-\(maxZ)]")
+        print("📦 Surface bbox: X[\(minX)-\(maxX)] Y[\(minY)-\(maxY)] Z[\(minZ)-\(maxZ)]")
         
         // Build fast lookup set
         let surfaceSet = surfaceVoxels
@@ -818,100 +917,47 @@ struct DepthVisualization3DView: View {
         var interiorCount = 0
         let lock = NSLock()
         
-        // Generate candidate interior positions (only within surface bounds)
+        // STEP 6: Generate candidate interior positions using floor Z limits
         var candidates: [VoxelKey] = []
         for x in (minX + 1)..<maxX {
             for y in (minY + 1)..<maxY {
-                for z in (minZ + 1)..<maxZ {
-                    let key = VoxelKey(x: x, y: y, z: z)
-                    if !surfaceSet.contains(key) {
-                        candidates.append(key)
+                let key = XYKey(x: x, y: y)
+                let floorZ = floorZMap[key] ?? minZ // Use hull floor Z, or minZ if outside hull
+                
+                let startZ = floorZ + 1
+                
+                // **FIX:** Ensure the starting Z is strictly less than the ceiling (maxZ).
+                // If startZ >= maxZ, the range (startZ)..<maxZ is invalid and will crash.
+                if startZ < maxZ {
+                    // Only generate candidates between floor and ceiling
+                    for z in startZ..<maxZ {
+                        let voxelKey = VoxelKey(x: x, y: y, z: z)
+                        if !surfaceSet.contains(voxelKey) {
+                            candidates.append(voxelKey)
+                        }
                     }
                 }
             }
         }
         
+        print("🎯 Generated \(candidates.count) candidates with hull floor limits")
         timer.lap("Generated \(candidates.count) candidate positions")
         
-        // Parallel ray-cast check
+        // STEP 7: Parallel ray-cast check (only -Z direction to surface)
         DispatchQueue.concurrentPerform(iterations: candidates.count) { index in
             let candidate = candidates[index]
             
-            // Cast 6 rays (±X, ±Y, ±Z directions)
-            var allRaysHitSurface = true
-            
-            // Ray +X
+            // Cast ray in -Z direction only
             var hitSurface = false
-//            for testX in (candidate.x + 1)...maxX {
-//                if surfaceSet.contains(VoxelKey(x: testX, y: candidate.y, z: candidate.z)) {
-//                    hitSurface = true
-//                    break
-//                }
-//            }
-//            if !hitSurface { allRaysHitSurface = false }
-//
-//            // Ray -X
-//            if allRaysHitSurface {
-//                hitSurface = false
-//                for testX in stride(from: candidate.x - 1, through: minX, by: -1) {
-//                    if surfaceSet.contains(VoxelKey(x: testX, y: candidate.y, z: candidate.z)) {
-//                        hitSurface = true
-//                        break
-//                    }
-//                }
-//                if !hitSurface { allRaysHitSurface = false }
-//            }
-//
-//            // Ray +Y
-//            if allRaysHitSurface {
-//                hitSurface = false
-//                for testY in (candidate.y + 1)...maxY {
-//                    if surfaceSet.contains(VoxelKey(x: candidate.x, y: testY, z: candidate.z)) {
-//                        hitSurface = true
-//                        break
-//                    }
-//                }
-//                if !hitSurface { allRaysHitSurface = false }
-//            }
-//
-//            // Ray -Y
-//            if allRaysHitSurface {
-//                hitSurface = false
-//                for testY in stride(from: candidate.y - 1, through: minY, by: -1) {
-//                    if surfaceSet.contains(VoxelKey(x: candidate.x, y: testY, z: candidate.z)) {
-//                        hitSurface = true
-//                        break
-//                    }
-//                }
-//                if !hitSurface { allRaysHitSurface = false }
-//            }
-            
-//            // Ray +Z
-//            if allRaysHitSurface {
-//                hitSurface = false
-//                for testZ in (candidate.z + 1)...maxZ {
-//                    if surfaceSet.contains(VoxelKey(x: candidate.x, y: candidate.y, z: testZ)) {
-//                        hitSurface = true
-//                        break
-//                    }
-//                }
-//                if !hitSurface { allRaysHitSurface = false }
-//            }
-            
-            // Ray -Z
-            if allRaysHitSurface {
-                hitSurface = false
-                for testZ in stride(from: candidate.z - 1, through: minZ, by: -1) {
-                    if surfaceSet.contains(VoxelKey(x: candidate.x, y: candidate.y, z: testZ)) {
-                        hitSurface = true
-                        break
-                    }
+            for testZ in stride(from: candidate.z - 1, through: minZ, by: -1) {
+                if surfaceSet.contains(VoxelKey(x: candidate.x, y: candidate.y, z: testZ)) {
+                    hitSurface = true
+                    break
                 }
-                if !hitSurface { allRaysHitSurface = false }
             }
             
-            // If all 6 rays hit surface, this voxel is interior
-            if allRaysHitSurface {
+            // If ray hits surface, this voxel is interior
+            if hitSurface {
                 lock.lock()
                 allVoxels.insert(candidate)
                 interiorCount += 1
@@ -920,9 +966,9 @@ struct DepthVisualization3DView: View {
         }
         
         timer.lap("Ray-cast complete")
-        print("Surface: \(surfaceVoxels.count), Interior: \(interiorCount), Total: \(allVoxels.count)")
+        print("✅ Surface: \(surfaceVoxels.count), Interior: \(interiorCount), Total: \(allVoxels.count)")
         
-        return allVoxels
+        return (allVoxels, hullGeometry)
     }
     
     // MARK: - Bottom Surface Creation
@@ -1055,6 +1101,90 @@ struct DepthVisualization3DView: View {
         upper.removeLast()
         
         return lower + upper
+    }
+    
+    // Helper function to check if a point is inside a polygon using ray casting algorithm
+    private func isPointInsidePolygon(x: Int, y: Int, polygon: [(x: Int, y: Int)]) -> Bool {
+        guard polygon.count >= 3 else { return false }
+        
+        var inside = false
+        var j = polygon.count - 1
+        
+        for i in 0..<polygon.count {
+            let xi = polygon[i].x
+            let yi = polygon[i].y
+            let xj = polygon[j].x
+            let yj = polygon[j].y
+            
+            if ((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi) {
+                inside = !inside
+            }
+            j = i
+        }
+        
+        return inside
+    }
+
+    // Create hull visualization with distinct color (MAGENTA/PURPLE)
+    private func createHullVisualizationGeometry(hull: [(x: Int, y: Int)], maxZMap: [XYKey: Int], voxelSize: Float, min: SCNVector3) -> SCNGeometry? {
+        guard hull.count >= 3 else { return nil }
+        
+        print("🎨 Creating hull visualization with \(hull.count) hull points")
+        
+        // Convert hull points to 3D vertices using their actual Z values
+        var vertices: [SCNVector3] = []
+        for point in hull {
+            let x = min.x + (Float(point.x) + 0.5) * voxelSize
+            let y = min.y + (Float(point.y) + 0.5) * voxelSize
+            
+            // Get the actual Z value for this XY position from maxZMap
+            let key = XYKey(x: point.x, y: point.y)
+            let gridZ = maxZMap[key] ?? 0
+            let z = min.z + (Float(gridZ) + 0.5) * voxelSize
+            
+            vertices.append(SCNVector3(x, y, z))
+            print("  Hull vertex: (\(point.x), \(point.y)) -> Z=\(gridZ) -> 3D: (\(x), \(y), \(z))")
+        }
+        
+        // Triangulate using fan triangulation from first vertex
+        var indices: [UInt32] = []
+        for i in 1..<(vertices.count - 1) {
+            indices.append(0)
+            indices.append(UInt32(i))
+            indices.append(UInt32(i + 1))
+        }
+        
+        // Create geometry
+        let vertexData = Data(bytes: vertices, count: vertices.count * MemoryLayout<SCNVector3>.size)
+        let vertexSource = SCNGeometrySource(
+            data: vertexData,
+            semantic: .vertex,
+            vectorCount: vertices.count,
+            usesFloatComponents: true,
+            componentsPerVector: 3,
+            bytesPerComponent: MemoryLayout<Float>.size,
+            dataOffset: 0,
+            dataStride: MemoryLayout<SCNVector3>.size
+        )
+        
+        let indexData = Data(bytes: indices, count: indices.count * MemoryLayout<UInt32>.size)
+        let element = SCNGeometryElement(
+            data: indexData,
+            primitiveType: .triangles,
+            primitiveCount: indices.count / 3,
+            bytesPerIndex: MemoryLayout<UInt32>.size
+        )
+        
+        let geometry = SCNGeometry(sources: [vertexSource], elements: [element])
+        let material = SCNMaterial()
+        material.diffuse.contents = UIColor(red: 1.0, green: 0.0, blue: 1.0, alpha: 0.9) // BRIGHT MAGENTA
+        material.lightingModel = .lambert
+        material.isDoubleSided = true
+        geometry.materials = [material]
+        
+        print("✨ Hull geometry created with \(vertices.count) vertices, \(indices.count/3) triangles")
+        
+        return geometry
     }
     
     // OPTIMIZED: Proper scanline fill with edge intersection
