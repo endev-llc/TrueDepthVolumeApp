@@ -61,6 +61,14 @@ struct DepthVisualization3DView: View {
     @State private var showHullVisualization: Bool = true
     @State private var hullVisualizationNode: SCNNode?
     
+    // MARK: - State for Cropping Functionality
+    @State private var showCropButton: Bool = false
+    @State private var isCropped: Bool = false
+    @State private var hullFloorMap: [XYKey: Int]? = nil
+    @State private var originalFinalVoxels: Set<VoxelKey>? = nil
+    @State private var minBoundingBox: SCNVector3? = nil
+    @State private var maxBoundingBox: SCNVector3? = nil
+    
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
@@ -141,6 +149,20 @@ struct DepthVisualization3DView: View {
                             .onChange(of: showHullVisualization) { _, newValue in
                                 toggleHullVisualizationVisibility(show: newValue)
                             }
+                        
+                        // NEW: Crop Button
+                        if showCropButton {
+                            Button(isCropped ? "Reset Crop" : "Crop") {
+                                if isCropped {
+                                    resetCrop()
+                                } else {
+                                    cropVoxelsAboveHull()
+                                }
+                            }
+                            .foregroundColor(.orange)
+                            .font(.caption)
+                            .padding(.top, 4)
+                        }
                     }
                     .padding()
                 }
@@ -273,6 +295,7 @@ struct DepthVisualization3DView: View {
                 DispatchQueue.main.async {
                     self.scene = scene
                     self.isLoading = false
+                    self.showCropButton = true // Show crop button when loading is done
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -647,6 +670,67 @@ struct DepthVisualization3DView: View {
         return (SCNVector3(minX, minY, minZ), SCNVector3(maxX, maxY, maxZ))
     }
     
+    // MARK: - Voxel Cropping Logic
+    private func cropVoxelsAboveHull() {
+        guard let originalVoxels = originalFinalVoxels,
+              let floorMap = hullFloorMap,
+              let min = minBoundingBox,
+              let max = maxBoundingBox,
+              let node = voxelNode else {
+            print("⚠️ Crop prerequisites not met. Missing original voxels, floor map, or scene node.")
+            return
+        }
+
+        // Filter the original set of voxels.
+        // A voxel is kept if its Z index is less than or equal to the hull floor's Z index
+        // at the same (X, Y) location.
+        let croppedVoxels = originalVoxels.filter { voxel in
+            let key = XYKey(x: voxel.x, y: voxel.y)
+            if let floorZ = floorMap[key] {
+                return voxel.z <= floorZ
+            }
+            // If the voxel's (X, Y) is outside the hull's 2D footprint,
+            // it does not have a floor to compare against, so it's removed.
+            return false
+        }
+
+        // Re-create the 3D geometry using only the cropped voxels
+        let newGeometry = createVoxelGeometryOptimized(voxels: croppedVoxels, voxelSize: voxelSize, min: min, max: max)
+        SCNTransaction.begin()
+        node.geometry = newGeometry
+        SCNTransaction.commit()
+
+        // Update the UI with new volume and count
+        let singleVoxelVolume = Double(voxelSize * voxelSize * voxelSize)
+        self.totalVolume = Double(croppedVoxels.count) * singleVoxelVolume
+        self.voxelCount = croppedVoxels.count
+        
+        self.isCropped = true
+    }
+
+    private func resetCrop() {
+        guard let originalVoxels = originalFinalVoxels,
+              let min = minBoundingBox,
+              let max = maxBoundingBox,
+              let node = voxelNode else {
+            print("⚠️ Reset prerequisites not met.")
+            return
+        }
+
+        // Re-create the geometry using the original, full set of voxels
+        let originalGeometry = createVoxelGeometryOptimized(voxels: originalVoxels, voxelSize: voxelSize, min: min, max: max)
+        SCNTransaction.begin()
+        node.geometry = originalGeometry
+        SCNTransaction.commit()
+
+        // Restore the original UI stats
+        let singleVoxelVolume = Double(voxelSize * voxelSize * voxelSize)
+        self.totalVolume = Double(originalVoxels.count) * singleVoxelVolume
+        self.voxelCount = originalVoxels.count
+        
+        self.isCropped = false
+    }
+    
     // MARK: - DISTANCE-BASED VOXELIZATION WITH RAY-CAST INTERIOR FILL
     private func createVoxelGeometry(from measurementPoints3D: [SCNVector3], refinementMask: [SCNVector3]? = nil, createBottomSurface: Bool = true) -> (SCNGeometry, VoxelVolumeInfo) {
         let overallTimer = PerformanceTimer("VOXELIZATION")
@@ -765,7 +849,13 @@ struct DepthVisualization3DView: View {
         overallTimer.lap("Filled \(surfaceVoxels.count) SURFACE voxels (PRESERVED)")
         
         // STEP 4: Ray-cast interior fill (respects surface boundary)
-        let (filledVoxels, hullGeometry) = fillInteriorRayCast(surfaceVoxels: surfaceVoxels, gridX: gridX, gridY: gridY, gridZ: gridZ, voxelSize: voxelSize, min: min)
+        let (filledVoxels, hullGeometry, floorMap) = fillInteriorRayCast(surfaceVoxels: surfaceVoxels, gridX: gridX, gridY: gridY, gridZ: gridZ, voxelSize: voxelSize, min: min)
+        
+        // Store the floor map and other data for the crop feature
+        DispatchQueue.main.async {
+            self.hullFloorMap = floorMap
+        }
+        
         overallTimer.lap("Interior fill complete: \(filledVoxels.count) total voxels")
         
         // Add hull visualization to scene
@@ -795,6 +885,13 @@ struct DepthVisualization3DView: View {
                 refinementXYSet.contains(XYKey(x: voxel.x, y: voxel.y))
             }
             overallTimer.lap("Applied refinement: \(finalVoxels.count) voxels remain")
+        }
+        
+        // Store original voxels for cropping/resetting
+        DispatchQueue.main.async {
+            self.originalFinalVoxels = finalVoxels
+            self.minBoundingBox = min
+            self.maxBoundingBox = max
         }
         
         guard !finalVoxels.isEmpty else {
@@ -829,7 +926,7 @@ struct DepthVisualization3DView: View {
     }
 
     // MARK: - Ray-Cast Interior Fill (Preserves Surface Detail)
-    private func fillInteriorRayCast(surfaceVoxels: Set<VoxelKey>, gridX: Int, gridY: Int, gridZ: Int, voxelSize: Float, min: SCNVector3) -> (voxels: Set<VoxelKey>, hullGeometry: SCNGeometry?) {
+    private func fillInteriorRayCast(surfaceVoxels: Set<VoxelKey>, gridX: Int, gridY: Int, gridZ: Int, voxelSize: Float, min: SCNVector3) -> (voxels: Set<VoxelKey>, hullGeometry: SCNGeometry?, floorMap: [XYKey: Int]) {
         let timer = PerformanceTimer("Ray-Cast Interior Fill")
         
         // STEP 1: Build maxZMap from surface voxels (same logic as createBottomClosingSurface)
@@ -968,7 +1065,7 @@ struct DepthVisualization3DView: View {
         timer.lap("Ray-cast complete")
         print("✅ Surface: \(surfaceVoxels.count), Interior: \(interiorCount), Total: \(allVoxels.count)")
         
-        return (allVoxels, hullGeometry)
+        return (allVoxels, hullGeometry, floorZMap)
     }
     
     // MARK: - Bottom Surface Creation
@@ -1231,6 +1328,8 @@ struct DepthVisualization3DView: View {
         let timer = PerformanceTimer("Geometry Creation")
         
         let voxelCount = voxels.count
+        guard voxelCount > 0 else { return SCNGeometry() }
+        
         let vertexCount = voxelCount * 8
         let indexCount = voxelCount * 36
         
