@@ -598,7 +598,7 @@ struct DepthVisualization3DView: View {
         if let refPoints = refinementMeasurementPoints3D {
             let refinementPointCloudGeometry = createPointCloudGeometry(from: refPoints)
             let refinementPointCloudNodeInstance = SCNNode(geometry: refinementPointCloudGeometry)
-            let (_, refinementVolumeInfo) = createVoxelGeometry(from: refPoints)
+            let (_, refinementVolumeInfo) = createVoxelGeometry(from: refPoints, createPlaneVisualization: false)
             
             DispatchQueue.main.async {
                 self.refinementVolume = refinementVolumeInfo.totalVolume
@@ -795,7 +795,7 @@ struct DepthVisualization3DView: View {
     }
     
     // MARK: - DISTANCE-BASED VOXELIZATION WITH RAY-CAST INTERIOR FILL
-    private func createVoxelGeometry(from measurementPoints3D: [SCNVector3], refinementMask: [SCNVector3]? = nil) -> (SCNGeometry, VoxelVolumeInfo) {
+    private func createVoxelGeometry(from measurementPoints3D: [SCNVector3], refinementMask: [SCNVector3]? = nil, createPlaneVisualization: Bool = true) -> (SCNGeometry, VoxelVolumeInfo) {
         let overallTimer = PerformanceTimer("VOXELIZATION")
         
         guard !measurementPoints3D.isEmpty else {
@@ -936,12 +936,12 @@ struct DepthVisualization3DView: View {
             return (SCNGeometry(), VoxelVolumeInfo(totalVolume: 0.0, voxelCount: 0, voxelSize: 0.0))
         }
         
-        // STEP 6: Calculate plane of best fit for floor
+        // STEP 6: Calculate plane of best fit for floor (ALWAYS based on primary points)
         print("\n🎯 PLANE FLOOR CALCULATION")
         
-        // Build max Z map for each XY coordinate
+        // Build max Z map for each XY coordinate using PRIMARY voxels (filledVoxels, not finalVoxels)
         var maxZMap: [XYKey: Int] = [:]
-        for voxel in finalVoxels {
+        for voxel in filledVoxels {
             let key = XYKey(x: voxel.x, y: voxel.y)
             if let existingZ = maxZMap[key] {
                 maxZMap[key] = Swift.max(existingZ, voxel.z)
@@ -987,28 +987,32 @@ struct DepthVisualization3DView: View {
             let planeZValue = planeZ(x: key.x, y: key.y, plane: plane)
             planeFloorMapLocal[key] = planeZValue
             
-            // Get all Z values for this XY column for logging
-            let columnVoxels = finalVoxels.filter { $0.x == key.x && $0.y == key.y }
+            // Get all Z values for this XY column for logging (from primary voxels)
+            let columnVoxels = filledVoxels.filter { $0.x == key.x && $0.y == key.y }
             let zValues = columnVoxels.map { $0.z }.sorted()
             print("  XY(\(key.x), \(key.y)): Plane Z = \(planeZValue), Surface Z values = \(zValues)")
         }
         
-        // Update state variables for cropping
-        DispatchQueue.main.async {
-            self.planeCoefficients = plane
-            self.planeFloorMap = planeFloorMapLocal
-            self.originalFinalVoxels = finalVoxels
-            self.minBoundingBox = min
-            self.maxBoundingBox = max
+        // Update state variables for cropping (only if creating plane visualization)
+        if createPlaneVisualization {
+            DispatchQueue.main.async {
+                self.planeCoefficients = plane
+                self.planeFloorMap = planeFloorMapLocal
+                self.originalFinalVoxels = finalVoxels
+                self.minBoundingBox = min
+                self.maxBoundingBox = max
+            }
         }
         
-        // Create plane visualization
-        if let planeGeometry = createPlaneVisualizationGeometry(hull: hull, plane: plane, voxelSize: voxelSize, min: min) {
-            let planeNode = SCNNode(geometry: planeGeometry)
-            DispatchQueue.main.async {
-                self.planeVisualizationNode = planeNode
-                if self.showPlaneVisualization {
-                    self.scene?.rootNode.addChildNode(planeNode)
+        // Create plane visualization (only if requested, not for refinement-only calculations)
+        if createPlaneVisualization {
+            if let planeGeometry = createPlaneVisualizationGeometry(hull: hull, plane: plane, voxelSize: voxelSize, min: min) {
+                let planeNode = SCNNode(geometry: planeGeometry)
+                DispatchQueue.main.async {
+                    self.planeVisualizationNode = planeNode
+                    if self.showPlaneVisualization {
+                        self.scene?.rootNode.addChildNode(planeNode)
+                    }
                 }
             }
         }
