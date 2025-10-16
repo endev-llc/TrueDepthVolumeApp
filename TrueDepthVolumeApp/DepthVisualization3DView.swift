@@ -604,7 +604,7 @@ struct DepthVisualization3DView: View {
         
         let primaryPointCloudNodeInstance = SCNNode(geometry: primaryPointCloudGeometry)
         
-        let (primaryVoxelGeometry, primaryVolumeInfo) = createVoxelGeometry(from: primaryMeasurementPoints3D, refinementMask: refinementMeasurementPoints3D)
+        let (primaryVoxelGeometry, primaryVolumeInfo) = createVoxelGeometry(from: primaryMeasurementPoints3D, refinementMask: refinementMeasurementPoints3D, boundaryPoints: boundaryPoints3D)
         timer.lap("Created voxel geometry")
         
         let primaryVoxelNodeInstance = SCNNode(geometry: primaryVoxelGeometry)
@@ -638,7 +638,7 @@ struct DepthVisualization3DView: View {
         if let refPoints = refinementMeasurementPoints3D {
             let refinementPointCloudGeometry = createPointCloudGeometry(from: refPoints)
             let refinementPointCloudNodeInstance = SCNNode(geometry: refinementPointCloudGeometry)
-            let (_, refinementVolumeInfo) = createVoxelGeometry(from: refPoints, createPlaneVisualization: false)
+            let (_, refinementVolumeInfo) = createVoxelGeometry(from: refPoints, boundaryPoints: nil, createPlaneVisualization: false)
             
             DispatchQueue.main.async {
                 self.refinementVolume = refinementVolumeInfo.totalVolume
@@ -850,7 +850,7 @@ struct DepthVisualization3DView: View {
     }
     
     // MARK: - DISTANCE-BASED VOXELIZATION WITH RAY-CAST INTERIOR FILL
-    private func createVoxelGeometry(from measurementPoints3D: [SCNVector3], refinementMask: [SCNVector3]? = nil, createPlaneVisualization: Bool = true) -> (SCNGeometry, VoxelVolumeInfo) {
+    private func createVoxelGeometry(from measurementPoints3D: [SCNVector3], refinementMask: [SCNVector3]? = nil, boundaryPoints: [SCNVector3]? = nil, createPlaneVisualization: Bool = true) -> (SCNGeometry, VoxelVolumeInfo) {
         let overallTimer = PerformanceTimer("VOXELIZATION")
         
         guard !measurementPoints3D.isEmpty else {
@@ -1048,10 +1048,72 @@ struct DepthVisualization3DView: View {
             return (SCNGeometry(), VoxelVolumeInfo(totalVolume: 0.0, voxelCount: 0, voxelSize: 0.0))
         }
         
-        // STEP 6: Calculate plane of best fit for floor (ALWAYS based on primary points)
+        // STEP 6: Calculate plane of best fit for floor (ALWAYS based on boundary points)
         print("\n🎯 PLANE FLOOR CALCULATION")
-        
-        // Build max Z map for each XY coordinate using PRIMARY voxels (filledVoxels, not finalVoxels)
+
+        // Use boundary points directly if available, otherwise fall back to original method
+        var planePoints3D: [(x: Int, y: Int, z: Int)] = []
+        var hullPointsForVisualization: [(x: Int, y: Int)] = []
+
+        if let bndryPoints = boundaryPoints, !bndryPoints.isEmpty {
+            print("  Using \(bndryPoints.count) boundary points for plane fitting")
+            
+            // Convert boundary points from world coordinates to voxel grid coordinates
+            for point in bndryPoints {
+                let vx = Int((point.x - min.x) / voxelSize)
+                let vy = Int((point.y - min.y) / voxelSize)
+                let vz = Int((point.z - min.z) / voxelSize)
+                
+                planePoints3D.append((x: vx, y: vy, z: vz))
+                hullPointsForVisualization.append((x: vx, y: vy))
+            }
+            
+            print("  Converted boundary points to voxel coordinates: \(planePoints3D.count)")
+        } else {
+            print("  No boundary points available, falling back to convex hull method")
+            
+            // Original method: Build max Z map for each XY coordinate using PRIMARY voxels
+            var maxZMap: [XYKey: Int] = [:]
+            for voxel in filledVoxels {
+                let key = XYKey(x: voxel.x, y: voxel.y)
+                if let existingZ = maxZMap[key] {
+                    maxZMap[key] = Swift.max(existingZ, voxel.z)
+                } else {
+                    maxZMap[key] = voxel.z
+                }
+            }
+            
+            print("  Found \(maxZMap.count) unique XY columns")
+            
+            // Get unique XY coordinates for hull calculation
+            var xyPoints: [(x: Int, y: Int)] = []
+            for (key, _) in maxZMap {
+                xyPoints.append((x: key.x, y: key.y))
+            }
+            
+            // Find convex hull to get perimeter
+            let hull = fastConvexHull2D(xyPoints)
+            print("  Convex hull has \(hull.count) perimeter points")
+            
+            // Get 3D coordinates of hull perimeter points
+            for point in hull {
+                let key = XYKey(x: point.x, y: point.y)
+                if let z = maxZMap[key] {
+                    planePoints3D.append((x: point.x, y: point.y, z: z))
+                    hullPointsForVisualization.append((x: point.x, y: point.y))
+                }
+            }
+            
+            print("  Hull perimeter 3D points: \(planePoints3D.count)")
+        }
+
+        // Fit plane to the selected points (boundary or hull)
+        guard let plane = fitPlaneToPoints(planePoints3D) else {
+            print("⚠️ Failed to fit plane to points")
+            return (SCNGeometry(), VoxelVolumeInfo(totalVolume: 0.0, voxelCount: 0, voxelSize: 0.0))
+        }
+
+        // Build maxZMap for all primary voxels (needed for floor map and logging)
         var maxZMap: [XYKey: Int] = [:]
         for voxel in filledVoxels {
             let key = XYKey(x: voxel.x, y: voxel.y)
@@ -1061,39 +1123,10 @@ struct DepthVisualization3DView: View {
                 maxZMap[key] = voxel.z
             }
         }
-        
-        print("  Found \(maxZMap.count) unique XY columns")
-        
-        // Get unique XY coordinates for hull calculation
-        var xyPoints: [(x: Int, y: Int)] = []
-        for (key, _) in maxZMap {
-            xyPoints.append((x: key.x, y: key.y))
-        }
-        
-        // Find convex hull to get perimeter
-        let hull = fastConvexHull2D(xyPoints)
-        print("  Convex hull has \(hull.count) perimeter points")
-        
-        // Get 3D coordinates of hull perimeter points
-        var hullPoints3D: [(x: Int, y: Int, z: Int)] = []
-        for point in hull {
-            let key = XYKey(x: point.x, y: point.y)
-            if let z = maxZMap[key] {
-                hullPoints3D.append((x: point.x, y: point.y, z: z))
-            }
-        }
-        
-        print("  Hull perimeter 3D points: \(hullPoints3D.count)")
-        
-        // Fit plane to hull perimeter points
-        guard let plane = fitPlaneToPoints(hullPoints3D) else {
-            print("⚠️ Failed to fit plane to hull points")
-            return (SCNGeometry(), VoxelVolumeInfo(totalVolume: 0.0, voxelCount: 0, voxelSize: 0.0))
-        }
-        
+
         // Store plane coefficients and create floor map using plane equation
         var planeFloorMapLocal: [XYKey: Int] = [:]
-        
+
         print("\n📋 PLANE Z VALUES FOR EACH XY COLUMN:")
         for (key, _) in maxZMap {
             let planeZValue = planeZ(x: key.x, y: key.y, plane: plane)
@@ -1104,7 +1137,7 @@ struct DepthVisualization3DView: View {
             let zValues = columnVoxels.map { $0.z }.sorted()
             print("  XY(\(key.x), \(key.y)): Plane Z = \(planeZValue), Surface Z values = \(zValues)")
         }
-        
+
         // Update state variables for cropping (only if creating plane visualization)
         if createPlaneVisualization {
             DispatchQueue.main.async {
@@ -1115,10 +1148,10 @@ struct DepthVisualization3DView: View {
                 self.maxBoundingBox = max
             }
         }
-        
+
         // Create plane visualization (only if requested, not for refinement-only calculations)
         if createPlaneVisualization {
-            if let planeGeometry = createPlaneVisualizationGeometry(hull: hull, plane: plane, voxelSize: voxelSize, min: min) {
+            if let planeGeometry = createPlaneVisualizationGeometry(hull: hullPointsForVisualization, plane: plane, voxelSize: voxelSize, min: min) {
                 let planeNode = SCNNode(geometry: planeGeometry)
                 DispatchQueue.main.async {
                     self.planeVisualizationNode = planeNode
@@ -1128,7 +1161,7 @@ struct DepthVisualization3DView: View {
                 }
             }
         }
-        
+
         overallTimer.lap("Plane floor calculation complete")
         
         // STEP 7: Calculate volume
