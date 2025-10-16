@@ -893,23 +893,23 @@ struct DepthVisualization3DView: View {
                 SCNVector3(point.x - center.x, point.y - center.y, point.z - center.z)
             }
             
-            print("\n🎯 BOUNDARY POINTS IN VOXEL GRID COORDINATES:")
-            print(String(repeating: "=", count: 60))
-            print("Grid dimensions: \(gridX)×\(gridY)×\(gridZ)")
-            print("Total boundary points: \(centeredBoundaryPoints.count)")
-            print("\nFirst 50 boundary points:")
+//            print("\n🎯 BOUNDARY POINTS IN VOXEL GRID COORDINATES:")
+//            print(String(repeating: "=", count: 60))
+//            print("Grid dimensions: \(gridX)×\(gridY)×\(gridZ)")
+//            print("Total boundary points: \(centeredBoundaryPoints.count)")
+//            print("\nFirst 50 boundary points:")
             
             for (index, point) in centeredBoundaryPoints.prefix(50).enumerated() {
                 let vx = Int((point.x - min.x) / voxelSize).clamped(to: 0..<gridX)
                 let vy = Int((point.y - min.y) / voxelSize).clamped(to: 0..<gridY)
                 let vz = Int((point.z - min.z) / voxelSize).clamped(to: 0..<gridZ)
                 
-                print("  Point \(index + 1): Voxel(\(vx), \(vy), \(vz)) | World(\(String(format: "%.4f", point.x)), \(String(format: "%.4f", point.y)), \(String(format: "%.4f", point.z))) m")
+//                print("  Point \(index + 1): Voxel(\(vx), \(vy), \(vz)) | World(\(String(format: "%.4f", point.x)), \(String(format: "%.4f", point.y)), \(String(format: "%.4f", point.z))) m")
             }
             
-            if centeredBoundaryPoints.count > 50 {
-                print("  ... (\(centeredBoundaryPoints.count - 50) more points)")
-            }
+//            if centeredBoundaryPoints.count > 50 {
+//                print("  ... (\(centeredBoundaryPoints.count - 50) more points)")
+//            }
             
             // Statistics
             let voxelCoords = centeredBoundaryPoints.map { point -> (Int, Int, Int) in
@@ -1124,6 +1124,25 @@ struct DepthVisualization3DView: View {
             }
         }
 
+        // Build minZMap from PRIMARY MEASUREMENT POINTS using CONTINUOUS Z values
+        var minZMap: [XYKey: Float] = [:]  // Changed to Float for precision
+        print("\n🎯 BUILDING MIN Z MAP FROM PRIMARY MEASUREMENT POINTS (CONTINUOUS)")
+        for point in measurementPoints3D {
+            let vx = Int((point.x - min.x) / voxelSize).clamped(to: 0..<gridX)
+            let vy = Int((point.y - min.y) / voxelSize).clamped(to: 0..<gridY)
+            
+            // Store CONTINUOUS Z in grid coordinates (not truncated)
+            let continuousVZ = (point.z - min.z) / voxelSize
+            let key = XYKey(x: vx, y: vy)
+            
+            if let existingZ = minZMap[key] {
+                minZMap[key] = Swift.min(existingZ, continuousVZ)
+            } else {
+                minZMap[key] = continuousVZ
+            }
+        }
+        print("  Built minZMap with \(minZMap.count) XY columns from primary points")
+
         // Store plane coefficients and create floor map using plane equation
         var planeFloorMapLocal: [XYKey: Int] = [:]
 
@@ -1135,31 +1154,50 @@ struct DepthVisualization3DView: View {
             // Get all Z values for this XY column for logging (from primary voxels)
             let columnVoxels = filledVoxels.filter { $0.x == key.x && $0.y == key.y }
             let zValues = columnVoxels.map { $0.z }.sorted()
-            print("  XY(\(key.x), \(key.y)): Plane Z = \(planeZValue), Surface Z values = \(zValues)")
+//            print("  XY(\(key.x), \(key.y)): Plane Z = \(planeZValue), Surface Z values = \(zValues)")
         }
 
         // Update state variables for cropping (only if creating plane visualization)
         if createPlaneVisualization {
-            // AUTOMATICALLY CROP VOXELS ABOVE PLANE
-            let croppedVoxels = finalVoxels.filter { voxel in
+            // STEP 1: CROP VOXELS ABOVE PLANE
+            let planeCroppedVoxels = finalVoxels.filter { voxel in
                 let planeZValue = planeZ(x: voxel.x, y: voxel.y, plane: plane)
                 return voxel.z < planeZValue
             }
             
-            print("AUTO-CROP: Kept \(croppedVoxels.count) voxels out of \(finalVoxels.count)")
+            print("✂️ AUTO-CROP STEP 1 (Plane): Kept \(planeCroppedVoxels.count) voxels out of \(finalVoxels.count)")
+            
+            // STEP 2: CROP VOXELS ABOVE/OUTSIDE PRIMARY POINT CLOUD
+                let finalCroppedVoxels = planeCroppedVoxels.filter { voxel in
+                    let key = XYKey(x: voxel.x, y: voxel.y)
+                    
+                    // If this XY coordinate has no primary points, remove the voxel
+                    guard let minZContinuous = minZMap[key] else {
+                        return false
+                    }
+                    
+                    // Voxel with integer coordinate z has its FRONT FACE at exactly z in grid coordinates
+                    // (center is at z+0.5, front face is at z+0.5-0.5 = z)
+                    // Keep voxel only if its front face is at or behind the closest primary point
+                    let voxelFrontFaceZ = Float(voxel.z)
+                    
+                    return voxelFrontFaceZ >= minZContinuous
+                }
+                
+                print("✂️ AUTO-CROP STEP 2 (Point Cloud Boundary): Kept \(finalCroppedVoxels.count) voxels out of \(planeCroppedVoxels.count)")
             
             DispatchQueue.main.async {
-                self.planeCoefficients = plane
-                self.planeFloorMap = planeFloorMapLocal
-                self.originalFinalVoxels = finalVoxels
-                self.minBoundingBox = min
-                self.maxBoundingBox = max
-                self.isCropped = true  // Mark as already cropped
+                    self.planeCoefficients = plane
+                    self.planeFloorMap = planeFloorMapLocal
+                    self.originalFinalVoxels = finalVoxels
+                    self.minBoundingBox = min
+                    self.maxBoundingBox = max
+                    self.isCropped = true  // Mark as already cropped
+                }
+                
+                // Use cropped voxels for display
+                finalVoxels = finalCroppedVoxels
             }
-            
-            // Use cropped voxels for display
-            finalVoxels = croppedVoxels
-        }
 
         // Create plane visualization (only if requested, not for refinement-only calculations)
         if createPlaneVisualization {
@@ -1319,7 +1357,7 @@ struct DepthVisualization3DView: View {
             let z3D = min.z + (z + 0.5) * voxelSize
             
             vertices.append(SCNVector3(x, y, z3D))
-            print("  Plane vertex: (\(point.x), \(point.y)) -> Plane Z=\(Int(round(z))) -> 3D: (\(x), \(y), \(z3D))")
+//            print("  Plane vertex: (\(point.x), \(point.y)) -> Plane Z=\(Int(round(z))) -> 3D: (\(x), \(y), \(z3D))")
         }
         
         // Triangulate using fan triangulation from first vertex
