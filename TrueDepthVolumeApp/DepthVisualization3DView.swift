@@ -52,9 +52,11 @@ struct DepthVisualization3DView: View {
     @State private var showVoxels: Bool = true
     @State private var showPrimaryPointCloud: Bool = false
     @State private var showRefinementPointCloud: Bool = false
+    @State private var showBoundaryPoints: Bool = true  // Show boundary points by default
     @State private var voxelNode: SCNNode?
     @State private var primaryPointCloudNode: SCNNode?
     @State private var refinementPointCloudNode: SCNNode?
+    @State private var boundaryPointCloudNode: SCNNode?  // Node for boundary points
     @State private var bottomSurfaceNode: SCNNode?
     @State private var boundingBoxNode: SCNNode?
     @State private var showBoundingBox: Bool = true
@@ -132,6 +134,16 @@ struct DepthVisualization3DView: View {
                                 .toggleStyle(SwitchToggleStyle(tint: .green))
                                 .onChange(of: showRefinementPointCloud) { _, newValue in
                                     toggleRefinementPointCloudVisibility(show: newValue)
+                                }
+                        }
+                        
+                        if boundaryPointCloudNode != nil {
+                            Toggle("Boundary Points", isOn: $showBoundaryPoints)
+                                .foregroundColor(.orange)
+                                .font(.caption)
+                                .toggleStyle(SwitchToggleStyle(tint: .orange))
+                                .onChange(of: showBoundaryPoints) { _, newValue in
+                                    toggleBoundaryPointsVisibility(show: newValue)
                                 }
                         }
                         
@@ -253,6 +265,15 @@ struct DepthVisualization3DView: View {
             scene?.rootNode.addChildNode(refinementPointCloudNode)
         } else {
             refinementPointCloudNode.removeFromParentNode()
+        }
+    }
+    
+    private func toggleBoundaryPointsVisibility(show: Bool) {
+        guard let boundaryPointCloudNode = boundaryPointCloudNode else { return }
+        if show {
+            scene?.rootNode.addChildNode(boundaryPointCloudNode)
+        } else {
+            boundaryPointCloudNode.removeFromParentNode()
         }
     }
     
@@ -527,6 +548,14 @@ struct DepthVisualization3DView: View {
             }
         }
         
+        // Convert boundary points to 3D for plane fitting
+        var boundaryPoints3D: [SCNVector3]? = nil
+        if !cameraManager.boundaryDepthPoints.isEmpty {
+            boundaryPoints3D = convertDepthPointsTo3D(cameraManager.boundaryDepthPoints)
+            print("\n🎯 CONVERTED \(boundaryPoints3D!.count) BOUNDARY POINTS TO 3D")
+            timer.lap("Converted boundary points to 3D")
+        }
+        
         // Calculate combined center
         var allPoints = primaryMeasurementPoints3D
         if let refPoints = refinementMeasurementPoints3D {
@@ -556,6 +585,17 @@ struct DepthVisualization3DView: View {
             }
             refinementMeasurementPoints3D = refPoints
             timer.lap("Centered refinement points")
+        }
+        
+        // Center boundary points if they exist
+        if var bndryPoints = boundaryPoints3D {
+            for i in 0..<bndryPoints.count {
+                bndryPoints[i].x -= center.x
+                bndryPoints[i].y -= center.y
+                bndryPoints[i].z -= center.z
+            }
+            boundaryPoints3D = bndryPoints
+            timer.lap("Centered boundary points")
         }
         
         // Create geometries (OPTIMIZED)
@@ -610,6 +650,21 @@ struct DepthVisualization3DView: View {
                 scene.rootNode.addChildNode(refinementPointCloudNodeInstance)
             }
             timer.lap("Created refinement geometry")
+        }
+        
+        // Boundary points if exist
+        if let bndryPoints = boundaryPoints3D {
+            let boundaryPointCloudGeometry = createBoundaryPointCloudGeometry(from: bndryPoints)
+            let boundaryPointCloudNodeInstance = SCNNode(geometry: boundaryPointCloudGeometry)
+            
+            DispatchQueue.main.async {
+                self.boundaryPointCloudNode = boundaryPointCloudNodeInstance
+            }
+            
+            if showBoundaryPoints {
+                scene.rootNode.addChildNode(boundaryPointCloudNodeInstance)
+            }
+            timer.lap("Created boundary point cloud geometry")
         }
         
         setupLighting(scene: scene)
@@ -820,6 +875,63 @@ struct DepthVisualization3DView: View {
         print("📏 Voxel size: \(String(format: "%.2f", voxelSize*1000))mm")
         
         overallTimer.lap("Grid calculated")
+        
+        // CONVERT BOUNDARY POINTS TO VOXEL COORDINATES AND PRINT
+        if !cameraManager.boundaryDepthPoints.isEmpty {
+            // Get the boundary points in 3D (already centered)
+            let boundaryPoints3D = convertDepthPointsTo3D(cameraManager.boundaryDepthPoints)
+            
+            // Center them like the main point cloud
+            let combinedBbox = calculateBoundingBox(measurementPoints3D)
+            let center = SCNVector3(
+                (combinedBbox.min.x + combinedBbox.max.x) / 2.0,
+                (combinedBbox.min.y + combinedBbox.max.y) / 2.0,
+                (combinedBbox.min.z + combinedBbox.max.z) / 2.0
+            )
+            
+            var centeredBoundaryPoints = boundaryPoints3D.map { point in
+                SCNVector3(point.x - center.x, point.y - center.y, point.z - center.z)
+            }
+            
+            print("\n🎯 BOUNDARY POINTS IN VOXEL GRID COORDINATES:")
+            print(String(repeating: "=", count: 60))
+            print("Grid dimensions: \(gridX)×\(gridY)×\(gridZ)")
+            print("Total boundary points: \(centeredBoundaryPoints.count)")
+            print("\nFirst 50 boundary points:")
+            
+            for (index, point) in centeredBoundaryPoints.prefix(50).enumerated() {
+                let vx = Int((point.x - min.x) / voxelSize).clamped(to: 0..<gridX)
+                let vy = Int((point.y - min.y) / voxelSize).clamped(to: 0..<gridY)
+                let vz = Int((point.z - min.z) / voxelSize).clamped(to: 0..<gridZ)
+                
+                print("  Point \(index + 1): Voxel(\(vx), \(vy), \(vz)) | World(\(String(format: "%.4f", point.x)), \(String(format: "%.4f", point.y)), \(String(format: "%.4f", point.z))) m")
+            }
+            
+            if centeredBoundaryPoints.count > 50 {
+                print("  ... (\(centeredBoundaryPoints.count - 50) more points)")
+            }
+            
+            // Statistics
+            let voxelCoords = centeredBoundaryPoints.map { point -> (Int, Int, Int) in
+                let vx = Int((point.x - min.x) / voxelSize).clamped(to: 0..<gridX)
+                let vy = Int((point.y - min.y) / voxelSize).clamped(to: 0..<gridY)
+                let vz = Int((point.z - min.z) / voxelSize).clamped(to: 0..<gridZ)
+                return (vx, vy, vz)
+            }
+            
+            let minVoxelX = voxelCoords.map { $0.0 }.min() ?? 0
+            let maxVoxelX = voxelCoords.map { $0.0 }.max() ?? 0
+            let minVoxelY = voxelCoords.map { $0.1 }.min() ?? 0
+            let maxVoxelY = voxelCoords.map { $0.1 }.max() ?? 0
+            let minVoxelZ = voxelCoords.map { $0.2 }.min() ?? 0
+            let maxVoxelZ = voxelCoords.map { $0.2 }.max() ?? 0
+            
+            print("\n📊 BOUNDARY VOXEL COORDINATE RANGES:")
+            print("  X: \(minVoxelX) to \(maxVoxelX)")
+            print("  Y: \(minVoxelY) to \(maxVoxelY)")
+            print("  Z: \(minVoxelZ) to \(maxVoxelZ)")
+            print(String(repeating: "=", count: 60) + "\n")
+        }
         
         // STEP 2: Build spatial hash
         var spatialHash = [VoxelKey: [SCNVector3]]()
@@ -1377,6 +1489,60 @@ struct DepthVisualization3DView: View {
             data: indexData,
             primitiveType: .point,
             primitiveCount: measurementPoints3D.count,
+            bytesPerIndex: MemoryLayout<UInt32>.size
+        )
+        
+        let geometry = SCNGeometry(sources: [vertexSource, colorSource], elements: [element])
+        let material = SCNMaterial()
+        material.lightingModel = .constant
+        material.isDoubleSided = true
+        geometry.materials = [material]
+        
+        return geometry
+    }
+    
+    private func createBoundaryPointCloudGeometry(from boundaryPoints3D: [SCNVector3]) -> SCNGeometry {
+        guard !boundaryPoints3D.isEmpty else { return SCNGeometry() }
+        
+        // Use bright orange color for all boundary points
+        let orangeColor = SCNVector3(1.0, 0.5, 0.0)  // Bright orange (RGB: 255, 128, 0)
+        var colors: [SCNVector3] = []
+        colors.reserveCapacity(boundaryPoints3D.count)
+        
+        for _ in boundaryPoints3D {
+            colors.append(orangeColor)
+        }
+        
+        let vertexData = Data(bytes: boundaryPoints3D, count: boundaryPoints3D.count * MemoryLayout<SCNVector3>.size)
+        let vertexSource = SCNGeometrySource(
+            data: vertexData,
+            semantic: .vertex,
+            vectorCount: boundaryPoints3D.count,
+            usesFloatComponents: true,
+            componentsPerVector: 3,
+            bytesPerComponent: MemoryLayout<Float>.size,
+            dataOffset: 0,
+            dataStride: MemoryLayout<SCNVector3>.size
+        )
+        
+        let colorData = Data(bytes: colors, count: colors.count * MemoryLayout<SCNVector3>.size)
+        let colorSource = SCNGeometrySource(
+            data: colorData,
+            semantic: .color,
+            vectorCount: colors.count,
+            usesFloatComponents: true,
+            componentsPerVector: 3,
+            bytesPerComponent: MemoryLayout<Float>.size,
+            dataOffset: 0,
+            dataStride: MemoryLayout<SCNVector3>.size
+        )
+        
+        let indices: [UInt32] = Array(0..<UInt32(boundaryPoints3D.count))
+        let indexData = Data(bytes: indices, count: indices.count * MemoryLayout<UInt32>.size)
+        let element = SCNGeometryElement(
+            data: indexData,
+            primitiveType: .point,
+            primitiveCount: boundaryPoints3D.count,
             bytesPerIndex: MemoryLayout<UInt32>.size
         )
         
