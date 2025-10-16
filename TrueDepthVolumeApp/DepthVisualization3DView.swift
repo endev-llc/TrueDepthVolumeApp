@@ -165,7 +165,7 @@ struct DepthVisualization3DView: View {
                         
                         // NEW: Crop Button
                         if showCropButton {
-                            Button(isCropped ? "Reset Crop" : "Crop") {
+                            Button(isCropped ? "Show Full" : "Crop to Plane") {
                                 if isCropped {
                                     resetCrop()
                                 } else {
@@ -798,7 +798,7 @@ struct DepthVisualization3DView: View {
             return
         }
 
-        print("✂️ Starting crop above plane...")
+        print("✂️ Re-applying crop to plane...")
         
         // Filter the original set of voxels.
         // A voxel is kept if its Z index is less than or equal to the plane's Z index
@@ -833,7 +833,7 @@ struct DepthVisualization3DView: View {
             return
         }
 
-        print("🔄 Resetting crop...")
+        print("🔄 Showing full (uncropped) voxels...")
         
         // Re-create the geometry using the original, full set of voxels
         let originalGeometry = createVoxelGeometryOptimized(voxels: originalVoxels, voxelSize: voxelSize, min: min, max: max)
@@ -1140,13 +1140,25 @@ struct DepthVisualization3DView: View {
 
         // Update state variables for cropping (only if creating plane visualization)
         if createPlaneVisualization {
+            // AUTOMATICALLY CROP VOXELS ABOVE PLANE
+            let croppedVoxels = finalVoxels.filter { voxel in
+                let planeZValue = planeZ(x: voxel.x, y: voxel.y, plane: plane)
+                return voxel.z < planeZValue
+            }
+            
+            print("AUTO-CROP: Kept \(croppedVoxels.count) voxels out of \(finalVoxels.count)")
+            
             DispatchQueue.main.async {
                 self.planeCoefficients = plane
                 self.planeFloorMap = planeFloorMapLocal
                 self.originalFinalVoxels = finalVoxels
                 self.minBoundingBox = min
                 self.maxBoundingBox = max
+                self.isCropped = true  // Mark as already cropped
             }
+            
+            // Use cropped voxels for display
+            finalVoxels = croppedVoxels
         }
 
         // Create plane visualization (only if requested, not for refinement-only calculations)
