@@ -1117,21 +1117,25 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
     }
     
     // MARK: - Mask-based Cropping Function (Add this to CameraManager.swift)
-    func cropDepthDataWithMask(_ maskImage: UIImage, imageFrame: CGRect, depthImageSize: CGSize) {
+    func cropDepthDataWithMask(_ maskImage: UIImage, imageFrame: CGRect, depthImageSize: CGSize, skipExpansion: Bool = false) {
         
-        // Use simple fast expansion instead of the 70-second version
-        guard let expandedMask = simpleExpandMask(maskImage) else {
-            presentError("Failed to expand mask for 3D object.")
-            return
+        // Conditionally apply expansion based on whether pen was used
+        let finalMask: UIImage
+        if skipExpansion {
+            print("⏭️ Skipping mask expansion - user drew mask with pen tool")
+            finalMask = maskImage
+        } else {
+            print("🔄 Applying smart expansion - mask from tap-to-apply only")
+            finalMask = simpleExpandMask(maskImage) ?? maskImage
         }
         
         // EXTRACT AND PRINT THE ACTUAL PERIMETER POINTS FROM THE MASK
-        extractAndPrintMaskBoundary(expandedMask, depthImageSize: depthImageSize)
+        extractAndPrintMaskBoundary(finalMask, depthImageSize: depthImageSize)
         
         // Save the cropped photo using the mask
         if let photo = capturedPhoto {
             DispatchQueue.global(qos: .userInitiated).async {
-                let croppedPhoto = self.cropPhoto(photo, withMask: expandedMask, imageFrame: imageFrame)
+                let croppedPhoto = self.cropPhoto(photo, withMask: finalMask, imageFrame: imageFrame)
                 DispatchQueue.main.async {
                     self.croppedPhoto = croppedPhoto
                 }
@@ -1139,9 +1143,9 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         }
         
         if !uploadedCSVData.isEmpty {
-            cropUploadedCSVWithMask(expandedMask, imageFrame: imageFrame, depthImageSize: depthImageSize)
+            cropUploadedCSVWithMask(finalMask, imageFrame: imageFrame, depthImageSize: depthImageSize)
         } else if let depthData = rawDepthData {
-            saveDepthDataToFileWithMask(depthData: depthData, maskImage: expandedMask, imageFrame: imageFrame, depthImageSize: depthImageSize)
+            saveDepthDataToFileWithMask(depthData: depthData, maskImage: finalMask, imageFrame: imageFrame, depthImageSize: depthImageSize)
         } else {
             presentError("No depth data available for cropping.")
             return
@@ -1178,13 +1182,20 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
     }
 
     // MARK: - FIXED: Refinement Function (no more 70-second hang)
-    func refineWithSecondaryMask(_ secondaryMask: UIImage, imageFrame: CGRect, depthImageSize: CGSize, primaryCroppedCSV: URL) {
-        // Refinement masks from MobileSAM are already precise - no expansion needed
-        // This makes refinement instant vs 10+ seconds
+    func refineWithSecondaryMask(_ secondaryMask: UIImage, imageFrame: CGRect, depthImageSize: CGSize, primaryCroppedCSV: URL, skipExpansion: Bool = false) {
+        // Refinement masks - only expand if not user-drawn
+        let finalMask: UIImage
+        if skipExpansion {
+            print("⏭️ Skipping refinement mask expansion - user drew mask with pen tool")
+            finalMask = secondaryMask
+        } else {
+            print("ℹ️ Refinement mask from tap-to-apply (already precise, no expansion needed)")
+            finalMask = secondaryMask
+        }
         
         // Store the refinement mask for the 3D view
         DispatchQueue.main.async {
-            self.refinementMask = secondaryMask  // Use mask directly, no expansion
+            self.refinementMask = finalMask
             self.refinementImageFrame = imageFrame
             self.refinementDepthImageSize = depthImageSize
         }

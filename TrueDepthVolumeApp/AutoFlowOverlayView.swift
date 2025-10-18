@@ -101,6 +101,7 @@ struct AutoSegmentOverlayView: View {
     @State private var brushSize: CGFloat = 30
     @State private var currentDrawingPath: [CGPoint] = []
     @State private var isDrawing = false
+    @State private var hasPenDrawnMasks = false
     
     var body: some View {
         ZStack {
@@ -347,6 +348,7 @@ struct AutoSegmentOverlayView: View {
         tapLocation = .zero
         showConfirmButton = false
         isImageEncoded = false
+        hasPenDrawnMasks = false
         
         Task {
             let success = await samManager.encodeImage(depthImage)
@@ -392,6 +394,7 @@ struct AutoSegmentOverlayView: View {
             maskHistory.append(drawnMask)
             maskImage = recompositeMaskHistory()
             showConfirmButton = true
+            hasPenDrawnMasks = true
         }
         
         currentDrawingPath = []
@@ -458,12 +461,13 @@ struct AutoSegmentOverlayView: View {
         maskImage = nil
         tapLocation = .zero
         showConfirmButton = false
+        hasPenDrawnMasks = false
     }
     
     private func cropCSVWithMask() {
         guard let maskImage = maskImage else { return }
         
-        cameraManager.cropDepthDataWithMask(maskImage, imageFrame: imageFrame, depthImageSize: depthImage.size)
+        cameraManager.cropDepthDataWithMask(maskImage, imageFrame: imageFrame, depthImageSize: depthImage.size, skipExpansion: hasPenDrawnMasks)
         
         // Wait for cropping to complete and then proceed
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
@@ -498,6 +502,7 @@ struct RefinementOverlayView: View {
     @State private var brushSize: CGFloat = 30
     @State private var currentDrawingPath: [CGPoint] = []
     @State private var isDrawing = false
+    @State private var hasPenDrawnMasks = false
     
     var body: some View {
         ZStack {
@@ -699,6 +704,7 @@ struct RefinementOverlayView: View {
         tapLocation = .zero
         showConfirmButton = false
         isImageEncoded = false
+        hasPenDrawnMasks = false
         
         let imageToSegment = photo ?? depthImage
         
@@ -746,6 +752,7 @@ struct RefinementOverlayView: View {
             maskHistory.append(drawnMask)
             maskImage = recompositeMaskHistory()
             showConfirmButton = true
+            hasPenDrawnMasks = true
         }
         
         currentDrawingPath = []
@@ -812,13 +819,14 @@ struct RefinementOverlayView: View {
         maskImage = nil
         tapLocation = .zero
         showConfirmButton = false
+        hasPenDrawnMasks = false
     }
     
     private func applyRefinementMask() {
         guard let maskImage = maskImage,
               let primaryCSV = primaryCroppedCSV else { return }
         
-        cameraManager.refineWithSecondaryMask(maskImage, imageFrame: imageFrame, depthImageSize: depthImage.size, primaryCroppedCSV: primaryCSV)
+        cameraManager.refineWithSecondaryMask(maskImage, imageFrame: imageFrame, depthImageSize: depthImage.size, primaryCroppedCSV: primaryCSV, skipExpansion: hasPenDrawnMasks)
         
         // Wait for refinement to complete and then proceed
         DispatchQueue.main.asyncAfter(deadline: .now()) {
