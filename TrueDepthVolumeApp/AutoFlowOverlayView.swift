@@ -96,6 +96,12 @@ struct AutoSegmentOverlayView: View {
     @State private var isImageEncoded = false
     @State private var showConfirmButton = false
     
+    // Pen drawing states
+    @State private var isPenMode = false
+    @State private var brushSize: CGFloat = 30
+    @State private var currentDrawingPath: [CGPoint] = []
+    @State private var isDrawing = false
+    
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
@@ -116,6 +122,13 @@ struct AutoSegmentOverlayView: View {
                         .font(.headline)
                     
                     Spacer()
+                    
+                    // Pen mode toggle
+                    Button(action: { isPenMode.toggle() }) {
+                        Image(systemName: isPenMode ? "pencil.circle.fill" : "pencil.circle")
+                            .font(.title2)
+                            .foregroundColor(isPenMode ? .blue : .white)
+                    }
                     
                     // Undo button
                     if !maskHistory.isEmpty {
@@ -147,8 +160,26 @@ struct AutoSegmentOverlayView: View {
                 .padding(.horizontal)
                 .frame(height: 44)
                 
-                // Opacity slider (only show if photo exists and not depth only)
-                if !showingDepthOnly && photo != nil {
+                // Brush size slider (when pen mode is active)
+                if isPenMode {
+                    HStack {
+                        Image(systemName: "circle.fill")
+                            .font(.system(size: 8))
+                            .foregroundColor(.white)
+                        Slider(value: $brushSize, in: 10...100)
+                            .accentColor(.blue)
+                        Image(systemName: "circle.fill")
+                            .font(.system(size: 20))
+                            .foregroundColor(.white)
+                        Text("\(Int(brushSize))")
+                            .foregroundColor(.white)
+                            .frame(width: 35)
+                    }
+                    .padding(.horizontal, 50)
+                }
+                
+                // Opacity slider (only show if photo exists and not depth only and not in pen mode)
+                if !showingDepthOnly && photo != nil && !isPenMode {
                     HStack {
                         Image(systemName: "photo")
                             .foregroundColor(.white)
@@ -196,8 +227,17 @@ struct AutoSegmentOverlayView: View {
                                 .aspectRatio(contentMode: .fit)
                         }
                         
+                        // Drawing overlay (for pen mode)
+                        if isPenMode && !currentDrawingPath.isEmpty {
+                            PenDrawingOverlay(
+                                points: $currentDrawingPath,
+                                brushSize: brushSize,
+                                color: UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 0.7)
+                            )
+                        }
+                        
                         // Tap indicator for auto-segmentation
-                        if tapLocation != .zero {
+                        if tapLocation != .zero && !isPenMode {
                             Circle()
                                 .fill(Color.red)
                                 .frame(width: 12, height: 12)
@@ -207,8 +247,28 @@ struct AutoSegmentOverlayView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .contentShape(Rectangle())
+                    .simultaneousGesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                if isPenMode && imageFrame.contains(value.location) {
+                                    if !isDrawing {
+                                        isDrawing = true
+                                        currentDrawingPath = [value.location]
+                                    } else {
+                                        currentDrawingPath.append(value.location)
+                                    }
+                                }
+                            }
+                            .onEnded { _ in
+                                if isPenMode && isDrawing {
+                                    finishDrawing()
+                                }
+                            }
+                    )
                     .onTapGesture { location in
-                        handleAutoSegmentTap(at: location)
+                        if !isPenMode {
+                            handleAutoSegmentTap(at: location)
+                        }
                     }
                 }
                 .coordinateSpace(name: "imageContainer")
@@ -262,7 +322,9 @@ struct AutoSegmentOverlayView: View {
     
     // MARK: - Helper Functions
     private func getInstructionText() -> String {
-        if !isImageEncoded {
+        if isPenMode {
+            return "Draw on the primary object with your finger. Tap ✓ when done."
+        } else if !isImageEncoded {
             return "Encoding image for AI segmentation..."
         } else if maskImage == nil {
             return "Tap anywhere on the primary object you want to measure."
@@ -316,6 +378,60 @@ struct AutoSegmentOverlayView: View {
                 }
             }
         }
+    }
+    
+    // MARK: - Pen Drawing Functions
+    private func finishDrawing() {
+        guard !currentDrawingPath.isEmpty else {
+            isDrawing = false
+            return
+        }
+        
+        // Convert drawn path to mask image
+        if let drawnMask = createMaskFromPath(currentDrawingPath, brushSize: brushSize, in: imageFrame, imageSize: imageDisplaySize) {
+            maskHistory.append(drawnMask)
+            maskImage = recompositeMaskHistory()
+            showConfirmButton = true
+        }
+        
+        currentDrawingPath = []
+        isDrawing = false
+    }
+    
+    private func createMaskFromPath(_ path: [CGPoint], brushSize: CGFloat, in frame: CGRect, imageSize: CGSize) -> UIImage? {
+        let size = imageSize
+        
+        UIGraphicsBeginImageContextWithOptions(size, false, 0.0)
+        defer { UIGraphicsEndImageContext() }
+        
+        guard let context = UIGraphicsGetCurrentContext() else { return nil }
+        
+        // Set up drawing context
+        context.setFillColor(UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 1.0).cgColor)
+        
+        // Draw circles at each point in the path
+        for point in path {
+            // Convert from screen coordinates to image coordinates
+            let relativeX = (point.x - frame.minX) / frame.width
+            let relativeY = (point.y - frame.minY) / frame.height
+            
+            let imageX = relativeX * size.width
+            let imageY = relativeY * size.height
+            
+            // Scale brush size proportionally to image size
+            let scaledBrushSize = brushSize * (size.width / frame.width)
+            
+            let rect = CGRect(
+                x: imageX - scaledBrushSize / 2,
+                y: imageY - scaledBrushSize / 2,
+                width: scaledBrushSize,
+                height: scaledBrushSize
+            )
+            
+            context.fillEllipse(in: rect)
+        }
+        
+        return UIGraphicsGetImageFromCurrentImageContext()
     }
     
     private func recompositeMaskHistory() -> UIImage? {
@@ -377,6 +493,12 @@ struct RefinementOverlayView: View {
     @State private var isImageEncoded = false
     @State private var showConfirmButton = false
     
+    // Pen drawing states
+    @State private var isPenMode = false
+    @State private var brushSize: CGFloat = 30
+    @State private var currentDrawingPath: [CGPoint] = []
+    @State private var isDrawing = false
+    
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
@@ -403,6 +525,13 @@ struct RefinementOverlayView: View {
                         Image(systemName: "forward.circle.fill")
                             .font(.title2)
                             .foregroundColor(.gray)
+                    }
+                    
+                    // Pen mode toggle
+                    Button(action: { isPenMode.toggle() }) {
+                        Image(systemName: isPenMode ? "pencil.circle.fill" : "pencil.circle")
+                            .font(.title2)
+                            .foregroundColor(isPenMode ? .blue : .white)
                     }
                     
                     // Undo button
@@ -435,6 +564,24 @@ struct RefinementOverlayView: View {
                 .padding(.horizontal)
                 .frame(height: 44)
                 
+                // Brush size slider (when pen mode is active)
+                if isPenMode {
+                    HStack {
+                        Image(systemName: "circle.fill")
+                            .font(.system(size: 8))
+                            .foregroundColor(.white)
+                        Slider(value: $brushSize, in: 10...100)
+                            .accentColor(.blue)
+                        Image(systemName: "circle.fill")
+                            .font(.system(size: 20))
+                            .foregroundColor(.white)
+                        Text("\(Int(brushSize))")
+                            .foregroundColor(.white)
+                            .frame(width: 35)
+                    }
+                    .padding(.horizontal, 50)
+                }
+                
                 Spacer()
                 
                 // Image overlay with proper coordinate space
@@ -463,8 +610,17 @@ struct RefinementOverlayView: View {
                                 .aspectRatio(contentMode: .fit)
                         }
                         
+                        // Drawing overlay (for pen mode)
+                        if isPenMode && !currentDrawingPath.isEmpty {
+                            PenDrawingOverlay(
+                                points: $currentDrawingPath,
+                                brushSize: brushSize,
+                                color: UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 0.7)
+                            )
+                        }
+                        
                         // Tap indicator
-                        if tapLocation != .zero {
+                        if tapLocation != .zero && !isPenMode {
                             Circle()
                                 .fill(Color.red)
                                 .frame(width: 12, height: 12)
@@ -474,8 +630,28 @@ struct RefinementOverlayView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .contentShape(Rectangle())
+                    .simultaneousGesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                if isPenMode && imageFrame.contains(value.location) {
+                                    if !isDrawing {
+                                        isDrawing = true
+                                        currentDrawingPath = [value.location]
+                                    } else {
+                                        currentDrawingPath.append(value.location)
+                                    }
+                                }
+                            }
+                            .onEnded { _ in
+                                if isPenMode && isDrawing {
+                                    finishDrawing()
+                                }
+                            }
+                    )
                     .onTapGesture { location in
-                        handleRefinementTap(at: location)
+                        if !isPenMode {
+                            handleRefinementTap(at: location)
+                        }
                     }
                 }
                 .coordinateSpace(name: "refinementContainer")
@@ -499,7 +675,9 @@ struct RefinementOverlayView: View {
     
     // MARK: - Helper Functions
     private func getRefinementInstructionText() -> String {
-        if !isImageEncoded {
+        if isPenMode {
+            return "Draw on the food contents to isolate. Tap ✓ to apply or skip to use full object."
+        } else if !isImageEncoded {
             return "Encoding image for refinement..."
         } else if maskImage == nil {
             return "Tap the food contents you want to isolate, or skip to use the full primary object."
@@ -556,6 +734,60 @@ struct RefinementOverlayView: View {
         }
     }
     
+    // MARK: - Pen Drawing Functions
+    private func finishDrawing() {
+        guard !currentDrawingPath.isEmpty else {
+            isDrawing = false
+            return
+        }
+        
+        // Convert drawn path to mask image
+        if let drawnMask = createMaskFromPath(currentDrawingPath, brushSize: brushSize, in: imageFrame, imageSize: imageDisplaySize) {
+            maskHistory.append(drawnMask)
+            maskImage = recompositeMaskHistory()
+            showConfirmButton = true
+        }
+        
+        currentDrawingPath = []
+        isDrawing = false
+    }
+    
+    private func createMaskFromPath(_ path: [CGPoint], brushSize: CGFloat, in frame: CGRect, imageSize: CGSize) -> UIImage? {
+        let size = imageSize
+        
+        UIGraphicsBeginImageContextWithOptions(size, false, 0.0)
+        defer { UIGraphicsEndImageContext() }
+        
+        guard let context = UIGraphicsGetCurrentContext() else { return nil }
+        
+        // Set up drawing context
+        context.setFillColor(UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 1.0).cgColor)
+        
+        // Draw circles at each point in the path
+        for point in path {
+            // Convert from screen coordinates to image coordinates
+            let relativeX = (point.x - frame.minX) / frame.width
+            let relativeY = (point.y - frame.minY) / frame.height
+            
+            let imageX = relativeX * size.width
+            let imageY = relativeY * size.height
+            
+            // Scale brush size proportionally to image size
+            let scaledBrushSize = brushSize * (size.width / frame.width)
+            
+            let rect = CGRect(
+                x: imageX - scaledBrushSize / 2,
+                y: imageY - scaledBrushSize / 2,
+                width: scaledBrushSize,
+                height: scaledBrushSize
+            )
+            
+            context.fillEllipse(in: rect)
+        }
+        
+        return UIGraphicsGetImageFromCurrentImageContext()
+    }
+    
     private func recompositeMaskHistory() -> UIImage? {
         guard !maskHistory.isEmpty else { return nil }
         var result = maskHistory[0]
@@ -591,6 +823,49 @@ struct RefinementOverlayView: View {
         // Wait for refinement to complete and then proceed
         DispatchQueue.main.asyncAfter(deadline: .now()) {
             onRefinementComplete()
+        }
+    }
+}
+
+// MARK: - Optimized Pen Drawing Overlay (UIView-based for minimal latency)
+struct PenDrawingOverlay: UIViewRepresentable {
+    @Binding var points: [CGPoint]
+    let brushSize: CGFloat
+    let color: UIColor
+    
+    func makeUIView(context: Context) -> PenDrawingCanvasView {
+        let view = PenDrawingCanvasView()
+        view.backgroundColor = .clear
+        view.isUserInteractionEnabled = false
+        return view
+    }
+    
+    func updateUIView(_ uiView: PenDrawingCanvasView, context: Context) {
+        uiView.points = points
+        uiView.brushSize = brushSize
+        uiView.color = color
+        uiView.setNeedsDisplay()
+    }
+}
+
+class PenDrawingCanvasView: UIView {
+    var points: [CGPoint] = []
+    var brushSize: CGFloat = 30
+    var color: UIColor = UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 0.7)
+    
+    override func draw(_ rect: CGRect) {
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+        
+        context.setFillColor(color.cgColor)
+        
+        for point in points {
+            let rect = CGRect(
+                x: point.x - brushSize / 2,
+                y: point.y - brushSize / 2,
+                width: brushSize,
+                height: brushSize
+            )
+            context.fillEllipse(in: rect)
         }
     }
 }
