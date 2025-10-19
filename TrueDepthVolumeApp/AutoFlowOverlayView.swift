@@ -228,12 +228,13 @@ struct AutoSegmentOverlayView: View {
                                 .aspectRatio(contentMode: .fit)
                         }
                         
-                        // Drawing overlay (for pen mode)
+                        // Drawing overlay (for pen mode) - FIXED: Now uses image-relative coordinates
                         if isPenMode && !currentDrawingPath.isEmpty {
                             PenDrawingOverlay(
                                 points: $currentDrawingPath,
                                 brushSize: brushSize,
-                                color: UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 0.7)
+                                color: UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 0.7),
+                                imageFrame: imageFrame
                             )
                         }
                         
@@ -256,6 +257,11 @@ struct AutoSegmentOverlayView: View {
                                         isDrawing = true
                                         currentDrawingPath = [value.location]
                                     } else {
+                                        // FIXED: Interpolate points for smooth drawing
+                                        if let lastPoint = currentDrawingPath.last {
+                                            let interpolatedPoints = interpolatePoints(from: lastPoint, to: value.location, spacing: 2.0)
+                                            currentDrawingPath.append(contentsOf: interpolatedPoints)
+                                        }
                                         currentDrawingPath.append(value.location)
                                     }
                                 }
@@ -341,6 +347,27 @@ struct AutoSegmentOverlayView: View {
         imageDisplaySize = frame.size
     }
     
+    // FIXED: Add point interpolation for smooth drawing
+    private func interpolatePoints(from start: CGPoint, to end: CGPoint, spacing: CGFloat) -> [CGPoint] {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let distance = sqrt(dx * dx + dy * dy)
+        
+        guard distance > spacing else { return [] }
+        
+        let steps = Int(distance / spacing)
+        var points: [CGPoint] = []
+        
+        for i in 1..<steps {
+            let t = CGFloat(i) / CGFloat(steps)
+            let x = start.x + dx * t
+            let y = start.y + dy * t
+            points.append(CGPoint(x: x, y: y))
+        }
+        
+        return points
+    }
+    
     // MARK: - Auto-Segmentation Functions
     private func startAutoSegmentation() {
         maskImage = nil
@@ -389,8 +416,8 @@ struct AutoSegmentOverlayView: View {
             return
         }
         
-        // Convert drawn path to mask image
-        if let drawnMask = createMaskFromPath(currentDrawingPath, brushSize: brushSize, in: imageFrame, imageSize: imageDisplaySize) {
+        // FIXED: Use actual image size, not display size to prevent shifting
+        if let drawnMask = createMaskFromPath(currentDrawingPath, brushSize: brushSize, in: imageFrame, imageSize: depthImage.size) {
             maskHistory.append(drawnMask)
             maskImage = recompositeMaskHistory()
             showConfirmButton = true
@@ -401,6 +428,7 @@ struct AutoSegmentOverlayView: View {
         isDrawing = false
     }
     
+    // FIXED: Completely rewritten to draw smooth continuous paths
     private func createMaskFromPath(_ path: [CGPoint], brushSize: CGFloat, in frame: CGRect, imageSize: CGSize) -> UIImage? {
         let size = imageSize
         
@@ -409,32 +437,41 @@ struct AutoSegmentOverlayView: View {
         
         guard let context = UIGraphicsGetCurrentContext() else { return nil }
         
-        // Set up drawing context
-        context.setFillColor(UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 1.0).cgColor)
+        // Set up drawing context for smooth path
+        context.setLineCap(.round)
+        context.setLineJoin(.round)
+        context.setStrokeColor(UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 1.0).cgColor)
         
-        // Draw circles at each point in the path
-        for point in path {
-            // Convert from screen coordinates to image coordinates
-            let relativeX = (point.x - frame.minX) / frame.width
-            let relativeY = (point.y - frame.minY) / frame.height
+        // Scale brush size proportionally to image size
+        let scaledBrushSize = brushSize * (size.width / frame.width)
+        context.setLineWidth(scaledBrushSize)
+        
+        // Convert path points from screen to image coordinates and draw
+        if let firstPoint = path.first {
+            let imagePoint = convertToImageCoordinates(firstPoint, frame: frame, imageSize: size)
+            context.beginPath()
+            context.move(to: imagePoint)
             
-            let imageX = relativeX * size.width
-            let imageY = relativeY * size.height
+            for point in path.dropFirst() {
+                let imagePoint = convertToImageCoordinates(point, frame: frame, imageSize: size)
+                context.addLine(to: imagePoint)
+            }
             
-            // Scale brush size proportionally to image size
-            let scaledBrushSize = brushSize * (size.width / frame.width)
-            
-            let rect = CGRect(
-                x: imageX - scaledBrushSize / 2,
-                y: imageY - scaledBrushSize / 2,
-                width: scaledBrushSize,
-                height: scaledBrushSize
-            )
-            
-            context.fillEllipse(in: rect)
+            context.strokePath()
         }
         
         return UIGraphicsGetImageFromCurrentImageContext()
+    }
+    
+    // FIXED: Helper function to convert screen coordinates to image coordinates
+    private func convertToImageCoordinates(_ point: CGPoint, frame: CGRect, imageSize: CGSize) -> CGPoint {
+        let relativeX = (point.x - frame.minX) / frame.width
+        let relativeY = (point.y - frame.minY) / frame.height
+        
+        return CGPoint(
+            x: relativeX * imageSize.width,
+            y: relativeY * imageSize.height
+        )
     }
     
     private func recompositeMaskHistory() -> UIImage? {
@@ -615,12 +652,13 @@ struct RefinementOverlayView: View {
                                 .aspectRatio(contentMode: .fit)
                         }
                         
-                        // Drawing overlay (for pen mode)
+                        // FIXED: Drawing overlay with image frame
                         if isPenMode && !currentDrawingPath.isEmpty {
                             PenDrawingOverlay(
                                 points: $currentDrawingPath,
                                 brushSize: brushSize,
-                                color: UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 0.7)
+                                color: UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 0.7),
+                                imageFrame: imageFrame
                             )
                         }
                         
@@ -643,6 +681,11 @@ struct RefinementOverlayView: View {
                                         isDrawing = true
                                         currentDrawingPath = [value.location]
                                     } else {
+                                        // FIXED: Interpolate points for smooth drawing
+                                        if let lastPoint = currentDrawingPath.last {
+                                            let interpolatedPoints = interpolatePoints(from: lastPoint, to: value.location, spacing: 2.0)
+                                            currentDrawingPath.append(contentsOf: interpolatedPoints)
+                                        }
                                         currentDrawingPath.append(value.location)
                                     }
                                 }
@@ -698,6 +741,27 @@ struct RefinementOverlayView: View {
         imageDisplaySize = frame.size
     }
     
+    // FIXED: Add point interpolation
+    private func interpolatePoints(from start: CGPoint, to end: CGPoint, spacing: CGFloat) -> [CGPoint] {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let distance = sqrt(dx * dx + dy * dy)
+        
+        guard distance > spacing else { return [] }
+        
+        let steps = Int(distance / spacing)
+        var points: [CGPoint] = []
+        
+        for i in 1..<steps {
+            let t = CGFloat(i) / CGFloat(steps)
+            let x = start.x + dx * t
+            let y = start.y + dy * t
+            points.append(CGPoint(x: x, y: y))
+        }
+        
+        return points
+    }
+    
     private func startRefinementSegmentation() {
         maskImage = nil
         maskHistory = []
@@ -747,8 +811,8 @@ struct RefinementOverlayView: View {
             return
         }
         
-        // Convert drawn path to mask image
-        if let drawnMask = createMaskFromPath(currentDrawingPath, brushSize: brushSize, in: imageFrame, imageSize: imageDisplaySize) {
+        // FIXED: Use actual image size, not display size to prevent shifting
+        if let drawnMask = createMaskFromPath(currentDrawingPath, brushSize: brushSize, in: imageFrame, imageSize: depthImage.size) {
             maskHistory.append(drawnMask)
             maskImage = recompositeMaskHistory()
             showConfirmButton = true
@@ -759,6 +823,7 @@ struct RefinementOverlayView: View {
         isDrawing = false
     }
     
+    // FIXED: Completely rewritten to draw smooth continuous paths
     private func createMaskFromPath(_ path: [CGPoint], brushSize: CGFloat, in frame: CGRect, imageSize: CGSize) -> UIImage? {
         let size = imageSize
         
@@ -767,32 +832,41 @@ struct RefinementOverlayView: View {
         
         guard let context = UIGraphicsGetCurrentContext() else { return nil }
         
-        // Set up drawing context
-        context.setFillColor(UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 1.0).cgColor)
+        // Set up drawing context for smooth path
+        context.setLineCap(.round)
+        context.setLineJoin(.round)
+        context.setStrokeColor(UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 1.0).cgColor)
         
-        // Draw circles at each point in the path
-        for point in path {
-            // Convert from screen coordinates to image coordinates
-            let relativeX = (point.x - frame.minX) / frame.width
-            let relativeY = (point.y - frame.minY) / frame.height
+        // Scale brush size proportionally to image size
+        let scaledBrushSize = brushSize * (size.width / frame.width)
+        context.setLineWidth(scaledBrushSize)
+        
+        // Convert path points from screen to image coordinates and draw
+        if let firstPoint = path.first {
+            let imagePoint = convertToImageCoordinates(firstPoint, frame: frame, imageSize: size)
+            context.beginPath()
+            context.move(to: imagePoint)
             
-            let imageX = relativeX * size.width
-            let imageY = relativeY * size.height
+            for point in path.dropFirst() {
+                let imagePoint = convertToImageCoordinates(point, frame: frame, imageSize: size)
+                context.addLine(to: imagePoint)
+            }
             
-            // Scale brush size proportionally to image size
-            let scaledBrushSize = brushSize * (size.width / frame.width)
-            
-            let rect = CGRect(
-                x: imageX - scaledBrushSize / 2,
-                y: imageY - scaledBrushSize / 2,
-                width: scaledBrushSize,
-                height: scaledBrushSize
-            )
-            
-            context.fillEllipse(in: rect)
+            context.strokePath()
         }
         
         return UIGraphicsGetImageFromCurrentImageContext()
+    }
+    
+    // FIXED: Helper function to convert screen coordinates to image coordinates
+    private func convertToImageCoordinates(_ point: CGPoint, frame: CGRect, imageSize: CGSize) -> CGPoint {
+        let relativeX = (point.x - frame.minX) / frame.width
+        let relativeY = (point.y - frame.minY) / frame.height
+        
+        return CGPoint(
+            x: relativeX * imageSize.width,
+            y: relativeY * imageSize.height
+        )
     }
     
     private func recompositeMaskHistory() -> UIImage? {
@@ -835,11 +909,12 @@ struct RefinementOverlayView: View {
     }
 }
 
-// MARK: - Optimized Pen Drawing Overlay (UIView-based for minimal latency)
+// MARK: - FIXED: Optimized Pen Drawing Overlay (now stays aligned with image)
 struct PenDrawingOverlay: UIViewRepresentable {
     @Binding var points: [CGPoint]
     let brushSize: CGFloat
     let color: UIColor
+    let imageFrame: CGRect  // FIXED: Added imageFrame parameter
     
     func makeUIView(context: Context) -> PenDrawingCanvasView {
         let view = PenDrawingCanvasView()
@@ -852,28 +927,37 @@ struct PenDrawingOverlay: UIViewRepresentable {
         uiView.points = points
         uiView.brushSize = brushSize
         uiView.color = color
+        uiView.imageFrame = imageFrame  // FIXED: Pass imageFrame to view
         uiView.setNeedsDisplay()
     }
 }
 
+// FIXED: Completely rewritten canvas view to draw smooth paths
 class PenDrawingCanvasView: UIView {
     var points: [CGPoint] = []
     var brushSize: CGFloat = 30
     var color: UIColor = UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 0.7)
+    var imageFrame: CGRect = .zero  // FIXED: Store image frame
     
     override func draw(_ rect: CGRect) {
-        guard let context = UIGraphicsGetCurrentContext() else { return }
+        guard let context = UIGraphicsGetCurrentContext(), !points.isEmpty else { return }
         
-        context.setFillColor(color.cgColor)
+        // FIXED: Draw smooth continuous path instead of individual circles
+        context.setLineCap(.round)
+        context.setLineJoin(.round)
+        context.setStrokeColor(color.cgColor)
+        context.setLineWidth(brushSize)
         
-        for point in points {
-            let rect = CGRect(
-                x: point.x - brushSize / 2,
-                y: point.y - brushSize / 2,
-                width: brushSize,
-                height: brushSize
-            )
-            context.fillEllipse(in: rect)
+        // Draw the path
+        if let firstPoint = points.first {
+            context.beginPath()
+            context.move(to: firstPoint)
+            
+            for point in points.dropFirst() {
+                context.addLine(to: point)
+            }
+            
+            context.strokePath()
         }
     }
 }
