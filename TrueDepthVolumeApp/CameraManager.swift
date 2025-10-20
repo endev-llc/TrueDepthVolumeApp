@@ -539,10 +539,23 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
             return
         }
         
+        // Get photo data
         if let imageData = photo.fileDataRepresentation() {
             self.currentPhotoData = imageData
-            self.processSimultaneousCapture()
         }
+        
+        // Get synchronized depth data from the SAME photo capture
+        if let depthData = photo.depthData {
+            self.currentDepthData = depthData
+            
+            // Store camera calibration data
+            if let calibrationData = depthData.cameraCalibrationData {
+                self.cameraCalibrationData = calibrationData
+            }
+        }
+        
+        // Process both together
+        self.processSimultaneousCapture()
     }
 
     // MARK: - Simultaneous Capture
@@ -555,23 +568,11 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
             self.croppedFileToShare = nil
         }
         
-        // Capture current depth data
-        self.depthDataQueue.async {
-            guard let depthData = self.latestDepthData else {
-                self.presentError("No depth data available to capture.")
-                return
-            }
-            
-            self.currentDepthData = depthData
-            
-            // Trigger photo capture
-            let settings = AVCapturePhotoSettings()
-            settings.isDepthDataDeliveryEnabled = true
-            
-            DispatchQueue.main.async {
-                self.photoOutput.capturePhoto(with: settings, delegate: self)
-            }
-        }
+        // Just trigger photo capture - depth will come with it
+        let settings = AVCapturePhotoSettings()
+        settings.isDepthDataDeliveryEnabled = true
+        
+        self.photoOutput.capturePhoto(with: settings, delegate: self)
     }
     
     private func processSimultaneousCapture() {
