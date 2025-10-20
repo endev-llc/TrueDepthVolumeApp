@@ -1150,42 +1150,22 @@ struct DepthVisualization3DView: View {
         for (key, _) in maxZMap {
             let planeZValue = planeZ(x: key.x, y: key.y, plane: plane)
             planeFloorMapLocal[key] = planeZValue
-            
-            // Get all Z values for this XY column for logging (from primary voxels)
-            let columnVoxels = filledVoxels.filter { $0.x == key.x && $0.y == key.y }
-            let zValues = columnVoxels.map { $0.z }.sorted()
-//            print("  XY(\(key.x), \(key.y)): Plane Z = \(planeZValue), Surface Z values = \(zValues)")
         }
+        print("  Calculated plane Z values for \(maxZMap.count) XY columns")
 
         // Update state variables for cropping (only if creating plane visualization)
         if createPlaneVisualization {
-            // STEP 1: CROP VOXELS ABOVE PLANE
-            let planeCroppedVoxels = finalVoxels.filter { voxel in
+            // COMBINED: Crop voxels above plane AND outside point cloud in ONE pass
+            let finalCroppedVoxels = finalVoxels.filter { voxel in
                 let planeZValue = planeZ(x: voxel.x, y: voxel.y, plane: plane)
-                return voxel.z < planeZValue
-            }
-            
-            print("✂️ AUTO-CROP STEP 1 (Plane): Kept \(planeCroppedVoxels.count) voxels out of \(finalVoxels.count)")
-            
-            // STEP 2: CROP VOXELS ABOVE/OUTSIDE PRIMARY POINT CLOUD
-                let finalCroppedVoxels = planeCroppedVoxels.filter { voxel in
-                    let key = XYKey(x: voxel.x, y: voxel.y)
-                    
-                    // If this XY coordinate has no primary points, remove the voxel
-                    guard let minZContinuous = minZMap[key] else {
-                        return false
-                    }
-                    
-                    // Voxel with integer coordinate z has its FRONT FACE at exactly z in grid coordinates
-                    // (center is at z+0.5, front face is at z+0.5-0.5 = z)
-                    // Keep voxel only if its front face is at or behind the closest primary point
-                    let voxelFrontFaceZ = Float(voxel.z)
-                    
-                    return voxelFrontFaceZ >= minZContinuous
-                }
+                guard voxel.z < planeZValue else { return false }
                 
-                print("✂️ AUTO-CROP STEP 2 (Point Cloud Boundary): Kept \(finalCroppedVoxels.count) voxels out of \(planeCroppedVoxels.count)")
-            
+                let key = XYKey(x: voxel.x, y: voxel.y)
+                guard let minZContinuous = minZMap[key] else { return false }
+                
+                return Float(voxel.z) >= minZContinuous
+            }
+                            
             DispatchQueue.main.async {
                     self.planeCoefficients = plane
                     self.planeFloorMap = planeFloorMapLocal
