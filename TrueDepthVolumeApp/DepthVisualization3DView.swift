@@ -950,78 +950,35 @@ struct DepthVisualization3DView: View {
         
         overallTimer.lap("Built spatial hash: \(spatialHash.count) cells")
         
-        // STEP 3: Surface voxel detection
-        let distanceThreshold = voxelSize * 1.5
-        let distanceThresholdSquared = distanceThreshold * distanceThreshold
-        let searchRadius = Int(ceil(distanceThreshold / voxelSize)) + 1
-
-        var candidateVoxels = Set<VoxelKey>()
-        for (key, _) in spatialHash {
-            for dx in -searchRadius...searchRadius {
-                for dy in -searchRadius...searchRadius {
-                    for dz in -searchRadius...searchRadius {
-                        let vx = key.x + dx
-                        let vy = key.y + dy
-                        let vz = key.z + dz
-                        
-                        if vx >= 0 && vx < gridX && vy >= 0 && vy < gridY && vz >= 0 && vz < gridZ {
-                            candidateVoxels.insert(VoxelKey(x: vx, y: vy, z: vz))
-                        }
-                    }
-                }
-            }
-        }
-
-        let candidateArray = Array(candidateVoxels)
+        // STEP 3: OPTIMIZED Surface voxel detection - directly from measurement points
         var surfaceVoxels = Set<VoxelKey>()
-        let lock = NSLock()
 
-        DispatchQueue.concurrentPerform(iterations: candidateArray.count) { index in
-            let testKey = candidateArray[index]
-            
-            let voxelCenterX = min.x + (Float(testKey.x) + 0.5) * voxelSize
-            let voxelCenterY = min.y + (Float(testKey.y) + 0.5) * voxelSize
-            let voxelCenterZ = min.z + (Float(testKey.z) + 0.5) * voxelSize
-            
-            let cellX = Int((voxelCenterX - min.x) / voxelSize)
-            let cellY = Int((voxelCenterY - min.y) / voxelSize)
-            let cellZ = Int((voxelCenterZ - min.z) / voxelSize)
-            
-            var foundNearbyPoint = false
-            
-            for ndx in -1...1 {
-                for ndy in -1...1 {
-                    for ndz in -1...1 {
-                        let neighborKey = VoxelKey(x: cellX + ndx, y: cellY + ndy, z: cellZ + ndz)
-                        
-                        if let points = spatialHash[neighborKey] {
-                            for point in points {
-                                let dx = voxelCenterX - point.x
-                                let dy = voxelCenterY - point.y
-                                let dz = voxelCenterZ - point.z
-                                let distSquared = dx*dx + dy*dy + dz*dz
-                                
-                                if distSquared <= distanceThresholdSquared {
-                                    foundNearbyPoint = true
-                                    break
-                                }
-                            }
-                            if foundNearbyPoint { break }
+        // First pass: Mark all voxels that contain actual measurement points
+        for point in measurementPoints3D {
+            let vx = Int((point.x - min.x) / voxelSize).clamped(to: 0..<gridX)
+            let vy = Int((point.y - min.y) / voxelSize).clamped(to: 0..<gridY)
+            let vz = Int((point.z - min.z) / voxelSize).clamped(to: 0..<gridZ)
+            surfaceVoxels.insert(VoxelKey(x: vx, y: vy, z: vz))
+        }
+
+        // Second pass: Dilate by 1 voxel to ensure connectivity and smooth surface
+        let occupiedVoxels = surfaceVoxels
+        for voxel in occupiedVoxels {
+            for dx in -1...1 {
+                for dy in -1...1 {
+                    for dz in -1...1 {
+                        let nx = voxel.x + dx
+                        let ny = voxel.y + dy
+                        let nz = voxel.z + dz
+                        if nx >= 0 && nx < gridX && ny >= 0 && ny < gridY && nz >= 0 && nz < gridZ {
+                            surfaceVoxels.insert(VoxelKey(x: nx, y: ny, z: nz))
                         }
                     }
-                    if foundNearbyPoint { break }
                 }
-                if foundNearbyPoint { break }
-            }
-            
-            if foundNearbyPoint {
-                lock.lock()
-                surfaceVoxels.insert(testKey)
-                lock.unlock()
             }
         }
-        
-        overallTimer.lap("Filled \(surfaceVoxels.count) SURFACE voxels (PRESERVED)")
+
+        overallTimer.lap("Filled \(surfaceVoxels.count) SURFACE voxels (OPTIMIZED)")
         
         // STEP 4: Ray-cast interior fill (respects surface boundary)
         let filledVoxels = fillInteriorRayCast(surfaceVoxels: surfaceVoxels, gridX: gridX, gridY: gridY, gridZ: gridZ)
