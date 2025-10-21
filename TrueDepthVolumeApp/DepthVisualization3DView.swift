@@ -52,11 +52,9 @@ struct DepthVisualization3DView: View {
     @State private var showVoxels: Bool = true
     @State private var showPrimaryPointCloud: Bool = false
     @State private var showRefinementPointCloud: Bool = false
-    @State private var showBoundaryPoints: Bool = true  // Show boundary points by default
     @State private var voxelNode: SCNNode?
     @State private var primaryPointCloudNode: SCNNode?
     @State private var refinementPointCloudNode: SCNNode?
-    @State private var boundaryPointCloudNode: SCNNode?  // Node for boundary points
     @State private var bottomSurfaceNode: SCNNode?
     @State private var boundingBoxNode: SCNNode?
     @State private var showBoundingBox: Bool = true
@@ -134,16 +132,6 @@ struct DepthVisualization3DView: View {
                                 .toggleStyle(SwitchToggleStyle(tint: .green))
                                 .onChange(of: showRefinementPointCloud) { _, newValue in
                                     toggleRefinementPointCloudVisibility(show: newValue)
-                                }
-                        }
-                        
-                        if boundaryPointCloudNode != nil {
-                            Toggle("Boundary Points", isOn: $showBoundaryPoints)
-                                .foregroundColor(.orange)
-                                .font(.caption)
-                                .toggleStyle(SwitchToggleStyle(tint: .orange))
-                                .onChange(of: showBoundaryPoints) { _, newValue in
-                                    toggleBoundaryPointsVisibility(show: newValue)
                                 }
                         }
                         
@@ -265,15 +253,6 @@ struct DepthVisualization3DView: View {
             scene?.rootNode.addChildNode(refinementPointCloudNode)
         } else {
             refinementPointCloudNode.removeFromParentNode()
-        }
-    }
-    
-    private func toggleBoundaryPointsVisibility(show: Bool) {
-        guard let boundaryPointCloudNode = boundaryPointCloudNode else { return }
-        if show {
-            scene?.rootNode.addChildNode(boundaryPointCloudNode)
-        } else {
-            boundaryPointCloudNode.removeFromParentNode()
         }
     }
     
@@ -587,16 +566,18 @@ struct DepthVisualization3DView: View {
             timer.lap("Centered refinement points")
         }
         
-        // Center boundary points if they exist
-        if var bndryPoints = boundaryPoints3D {
-            for i in 0..<bndryPoints.count {
-                bndryPoints[i].x -= center.x
-                bndryPoints[i].y -= center.y
-                bndryPoints[i].z -= center.z
-            }
-            boundaryPoints3D = bndryPoints
-            timer.lap("Centered boundary points")
-        }
+        // Center background surface points if they exist
+                var centeredBackgroundPoints: [SCNVector3]? = nil
+                if !cameraManager.backgroundSurfacePoints.isEmpty {
+                    var bgPoints = convertDepthPointsTo3D(cameraManager.backgroundSurfacePoints)
+                    for i in 0..<bgPoints.count {
+                        bgPoints[i].x -= center.x
+                        bgPoints[i].y -= center.y
+                        bgPoints[i].z -= center.z
+                    }
+                    centeredBackgroundPoints = bgPoints
+                    timer.lap("Centered background surface points")
+                }
         
         // Create geometries (OPTIMIZED)
         let primaryPointCloudGeometry = createPointCloudGeometry(from: primaryMeasurementPoints3D)
@@ -604,7 +585,7 @@ struct DepthVisualization3DView: View {
         
         let primaryPointCloudNodeInstance = SCNNode(geometry: primaryPointCloudGeometry)
         
-        let (primaryVoxelGeometry, primaryVolumeInfo) = createVoxelGeometry(from: primaryMeasurementPoints3D, refinementMask: refinementMeasurementPoints3D, boundaryPoints: boundaryPoints3D)
+        let (primaryVoxelGeometry, primaryVolumeInfo) = createVoxelGeometry(from: primaryMeasurementPoints3D, refinementMask: refinementMeasurementPoints3D, backgroundPoints: centeredBackgroundPoints)
         timer.lap("Created voxel geometry")
         
         let primaryVoxelNodeInstance = SCNNode(geometry: primaryVoxelGeometry)
@@ -638,7 +619,7 @@ struct DepthVisualization3DView: View {
         if let refPoints = refinementMeasurementPoints3D {
             let refinementPointCloudGeometry = createPointCloudGeometry(from: refPoints)
             let refinementPointCloudNodeInstance = SCNNode(geometry: refinementPointCloudGeometry)
-            let (_, refinementVolumeInfo) = createVoxelGeometry(from: refPoints, boundaryPoints: nil, createPlaneVisualization: false)
+            let (_, refinementVolumeInfo) = createVoxelGeometry(from: refPoints, backgroundPoints: nil, createPlaneVisualization: false)
             
             DispatchQueue.main.async {
                 self.refinementVolume = refinementVolumeInfo.totalVolume
@@ -650,21 +631,6 @@ struct DepthVisualization3DView: View {
                 scene.rootNode.addChildNode(refinementPointCloudNodeInstance)
             }
             timer.lap("Created refinement geometry")
-        }
-        
-        // Boundary points if exist
-        if let bndryPoints = boundaryPoints3D {
-            let boundaryPointCloudGeometry = createBoundaryPointCloudGeometry(from: bndryPoints)
-            let boundaryPointCloudNodeInstance = SCNNode(geometry: boundaryPointCloudGeometry)
-            
-            DispatchQueue.main.async {
-                self.boundaryPointCloudNode = boundaryPointCloudNodeInstance
-            }
-            
-            if showBoundaryPoints {
-                scene.rootNode.addChildNode(boundaryPointCloudNodeInstance)
-            }
-            timer.lap("Created boundary point cloud geometry")
         }
         
         setupLighting(scene: scene)
@@ -850,7 +816,7 @@ struct DepthVisualization3DView: View {
     }
     
     // MARK: - DISTANCE-BASED VOXELIZATION WITH RAY-CAST INTERIOR FILL
-    private func createVoxelGeometry(from measurementPoints3D: [SCNVector3], refinementMask: [SCNVector3]? = nil, boundaryPoints: [SCNVector3]? = nil, createPlaneVisualization: Bool = true) -> (SCNGeometry, VoxelVolumeInfo) {
+    private func createVoxelGeometry(from measurementPoints3D: [SCNVector3], refinementMask: [SCNVector3]? = nil, backgroundPoints: [SCNVector3]? = nil, createPlaneVisualization: Bool = true) -> (SCNGeometry, VoxelVolumeInfo) {
         let overallTimer = PerformanceTimer("VOXELIZATION")
         
         guard !measurementPoints3D.isEmpty else {
@@ -1005,64 +971,64 @@ struct DepthVisualization3DView: View {
             return (SCNGeometry(), VoxelVolumeInfo(totalVolume: 0.0, voxelCount: 0, voxelSize: 0.0))
         }
         
-        // STEP 6: Calculate plane of best fit for floor (ALWAYS based on boundary points)
-        print("\n🎯 PLANE FLOOR CALCULATION")
+        // STEP 6: Calculate plane of best fit for floor (ALWAYS based on background surface points)
+                print("\n🎯 PLANE FLOOR CALCULATION")
 
-        // Use boundary points directly if available, otherwise fall back to original method
-        var planePoints3D: [(x: Int, y: Int, z: Int)] = []
-        var hullPointsForVisualization: [(x: Int, y: Int)] = []
+                // Use background surface points if available, otherwise fall back to convex hull method
+                var planePoints3D: [(x: Int, y: Int, z: Int)] = []
+                var hullPointsForVisualization: [(x: Int, y: Int)] = []
 
-        if let bndryPoints = boundaryPoints, !bndryPoints.isEmpty {
-            print("  Using \(bndryPoints.count) boundary points for plane fitting")
-            
-            // Convert boundary points from world coordinates to voxel grid coordinates
-            for point in bndryPoints {
-                let vx = Int((point.x - min.x) / voxelSize)
-                let vy = Int((point.y - min.y) / voxelSize)
-                let vz = Int((point.z - min.z) / voxelSize)
-                
-                planePoints3D.append((x: vx, y: vy, z: vz))
-                hullPointsForVisualization.append((x: vx, y: vy))
-            }
-            
-            print("  Converted boundary points to voxel coordinates: \(planePoints3D.count)")
-        } else {
-            print("  No boundary points available, falling back to convex hull method")
-            
-            // Original method: Build max Z map for each XY coordinate using PRIMARY voxels
-            var maxZMap: [XYKey: Int] = [:]
-            for voxel in filledVoxels {
-                let key = XYKey(x: voxel.x, y: voxel.y)
-                if let existingZ = maxZMap[key] {
-                    maxZMap[key] = Swift.max(existingZ, voxel.z)
+        if let bgPoints = backgroundPoints, !bgPoints.isEmpty {
+                    print("  Using \(bgPoints.count) user-selected background surface points for plane fitting")
+                    
+                    // Convert background points (already centered) to voxel grid coordinates
+                    for point in bgPoints {
+                        let vx = Int((point.x - min.x) / voxelSize)
+                        let vy = Int((point.y - min.y) / voxelSize)
+                        let vz = Int((point.z - min.z) / voxelSize)
+                        
+                        planePoints3D.append((x: vx, y: vy, z: vz))
+                        hullPointsForVisualization.append((x: vx, y: vy))
+                    }
+                    
+                    print("  Converted background surface points to voxel coordinates: \(planePoints3D.count)")
                 } else {
-                    maxZMap[key] = voxel.z
+                    print("  No background surface points available, falling back to convex hull method")
+                    
+                    // Original method: Build max Z map for each XY coordinate using PRIMARY voxels
+                    var maxZMap: [XYKey: Int] = [:]
+                    for voxel in filledVoxels {
+                        let key = XYKey(x: voxel.x, y: voxel.y)
+                        if let existingZ = maxZMap[key] {
+                            maxZMap[key] = Swift.max(existingZ, voxel.z)
+                        } else {
+                            maxZMap[key] = voxel.z
+                        }
+                    }
+                    
+                    print("  Found \(maxZMap.count) unique XY columns")
+                    
+                    // Get unique XY coordinates for hull calculation
+                    var xyPoints: [(x: Int, y: Int)] = []
+                    for (key, _) in maxZMap {
+                        xyPoints.append((x: key.x, y: key.y))
+                    }
+                    
+                    // Find convex hull to get perimeter
+                    let hull = fastConvexHull2D(xyPoints)
+                    print("  Convex hull has \(hull.count) perimeter points")
+                    
+                    // Get 3D coordinates of hull perimeter points
+                    for point in hull {
+                        let key = XYKey(x: point.x, y: point.y)
+                        if let z = maxZMap[key] {
+                            planePoints3D.append((x: point.x, y: point.y, z: z))
+                            hullPointsForVisualization.append((x: point.x, y: point.y))
+                        }
+                    }
+                    
+                    print("  Hull perimeter 3D points: \(planePoints3D.count)")
                 }
-            }
-            
-            print("  Found \(maxZMap.count) unique XY columns")
-            
-            // Get unique XY coordinates for hull calculation
-            var xyPoints: [(x: Int, y: Int)] = []
-            for (key, _) in maxZMap {
-                xyPoints.append((x: key.x, y: key.y))
-            }
-            
-            // Find convex hull to get perimeter
-            let hull = fastConvexHull2D(xyPoints)
-            print("  Convex hull has \(hull.count) perimeter points")
-            
-            // Get 3D coordinates of hull perimeter points
-            for point in hull {
-                let key = XYKey(x: point.x, y: point.y)
-                if let z = maxZMap[key] {
-                    planePoints3D.append((x: point.x, y: point.y, z: z))
-                    hullPointsForVisualization.append((x: point.x, y: point.y))
-                }
-            }
-            
-            print("  Hull perimeter 3D points: \(planePoints3D.count)")
-        }
 
         // Fit plane to the selected points (boundary or hull)
         guard let plane = fitPlaneToPoints(planePoints3D) else {

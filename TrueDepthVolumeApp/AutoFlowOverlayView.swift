@@ -21,6 +21,7 @@ struct AutoFlowOverlayView: View {
     enum FlowState {
         case primarySegmentation
         case refinement
+        case backgroundSelection
         case completed
     }
     
@@ -48,10 +49,28 @@ struct AutoFlowOverlayView: View {
                     cameraManager: cameraManager,
                     primaryCroppedCSV: primaryCroppedCSV,
                     onRefinementComplete: {
+                        flowState = .backgroundSelection
+                    },
+                    onSkip: {
+                        flowState = .backgroundSelection
+                    },
+                    onDismiss: onComplete
+                )
+            }
+            
+            // Background selection phase
+            if flowState == .backgroundSelection {
+                BackgroundSelectionOverlayView(
+                    depthImage: depthImage,
+                    photo: photo,
+                    cameraManager: cameraManager,
+                    onBackgroundComplete: {
                         flowState = .completed
                         show3DView = true
                     },
                     onSkip: {
+                        // Clear background points if skipped
+                        cameraManager.backgroundSurfacePoints = []
                         flowState = .completed
                         show3DView = true
                     },
@@ -67,6 +86,7 @@ struct AutoFlowOverlayView: View {
                     onDismiss: {
                         show3DView = false
                         cameraManager.refinementMask = nil
+                        cameraManager.backgroundSurfacePoints = []
                         onComplete()
                     }
                 )
@@ -228,7 +248,7 @@ struct AutoSegmentOverlayView: View {
                                 .aspectRatio(contentMode: .fit)
                         }
                         
-                        // Drawing overlay (for pen mode) - FIXED: Now uses image-relative coordinates
+                        // Drawing overlay (for pen mode)
                         if isPenMode && !currentDrawingPath.isEmpty {
                             PenDrawingOverlay(
                                 points: $currentDrawingPath,
@@ -257,7 +277,6 @@ struct AutoSegmentOverlayView: View {
                                         isDrawing = true
                                         currentDrawingPath = [value.location]
                                     } else {
-                                        // FIXED: Interpolate points for smooth drawing
                                         if let lastPoint = currentDrawingPath.last {
                                             let interpolatedPoints = interpolatePoints(from: lastPoint, to: value.location, spacing: 2.0)
                                             currentDrawingPath.append(contentsOf: interpolatedPoints)
@@ -341,13 +360,11 @@ struct AutoSegmentOverlayView: View {
     }
     
     private func updateImageFrame(imageGeometry: GeometryProxy) {
-        // Get the actual frame of the rendered image in the container's coordinate space
         let frame = imageGeometry.frame(in: .named("imageContainer"))
         imageFrame = frame
         imageDisplaySize = frame.size
     }
     
-    // FIXED: Add point interpolation for smooth drawing
     private func interpolatePoints(from start: CGPoint, to end: CGPoint, spacing: CGFloat) -> [CGPoint] {
         let dx = end.x - start.x
         let dy = end.y - start.y
@@ -390,7 +407,6 @@ struct AutoSegmentOverlayView: View {
         
         tapLocation = location
         
-        // Convert tap location to relative coordinates within the image
         let relativeX = location.x - imageFrame.minX
         let relativeY = location.y - imageFrame.minY
         let relativeLocation = CGPoint(x: relativeX, y: relativeY)
@@ -399,9 +415,7 @@ struct AutoSegmentOverlayView: View {
             let mask = await samManager.generateMask(at: relativeLocation, in: imageDisplaySize)
             await MainActor.run {
                 if let mask = mask {
-                    // Add to history
                     maskHistory.append(mask)
-                    // Recomposite all masks from history
                     self.maskImage = recompositeMaskHistory()
                     self.showConfirmButton = true
                 }
@@ -416,7 +430,6 @@ struct AutoSegmentOverlayView: View {
             return
         }
         
-        // FIXED: Use actual image size, not display size to prevent shifting
         if let drawnMask = createMaskFromPath(currentDrawingPath, brushSize: brushSize, in: imageFrame, imageSize: depthImage.size) {
             maskHistory.append(drawnMask)
             maskImage = recompositeMaskHistory()
@@ -428,7 +441,6 @@ struct AutoSegmentOverlayView: View {
         isDrawing = false
     }
     
-    // FIXED: Completely rewritten to draw smooth continuous paths
     private func createMaskFromPath(_ path: [CGPoint], brushSize: CGFloat, in frame: CGRect, imageSize: CGSize) -> UIImage? {
         let size = imageSize
         
@@ -437,16 +449,13 @@ struct AutoSegmentOverlayView: View {
         
         guard let context = UIGraphicsGetCurrentContext() else { return nil }
         
-        // Set up drawing context for smooth path
         context.setLineCap(.round)
         context.setLineJoin(.round)
         context.setStrokeColor(UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 1.0).cgColor)
         
-        // Scale brush size proportionally to image size
         let scaledBrushSize = brushSize * (size.width / frame.width)
         context.setLineWidth(scaledBrushSize)
         
-        // Convert path points from screen to image coordinates and draw
         if let firstPoint = path.first {
             let imagePoint = convertToImageCoordinates(firstPoint, frame: frame, imageSize: size)
             context.beginPath()
@@ -463,7 +472,6 @@ struct AutoSegmentOverlayView: View {
         return UIGraphicsGetImageFromCurrentImageContext()
     }
     
-    // FIXED: Helper function to convert screen coordinates to image coordinates
     private func convertToImageCoordinates(_ point: CGPoint, frame: CGRect, imageSize: CGSize) -> CGPoint {
         let relativeX = (point.x - frame.minX) / frame.width
         let relativeY = (point.y - frame.minY) / frame.height
@@ -506,7 +514,6 @@ struct AutoSegmentOverlayView: View {
         
         cameraManager.cropDepthDataWithMask(maskImage, imageFrame: imageFrame, depthImageSize: depthImage.size, skipExpansion: hasPenDrawnMasks)
         
-        // Wait for cropping to complete and then proceed
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             onPrimaryComplete(cameraManager.croppedFileToShare)
         }
@@ -652,7 +659,6 @@ struct RefinementOverlayView: View {
                                 .aspectRatio(contentMode: .fit)
                         }
                         
-                        // FIXED: Drawing overlay with image frame
                         if isPenMode && !currentDrawingPath.isEmpty {
                             PenDrawingOverlay(
                                 points: $currentDrawingPath,
@@ -681,7 +687,6 @@ struct RefinementOverlayView: View {
                                         isDrawing = true
                                         currentDrawingPath = [value.location]
                                     } else {
-                                        // FIXED: Interpolate points for smooth drawing
                                         if let lastPoint = currentDrawingPath.last {
                                             let interpolatedPoints = interpolatePoints(from: lastPoint, to: value.location, spacing: 2.0)
                                             currentDrawingPath.append(contentsOf: interpolatedPoints)
@@ -735,13 +740,11 @@ struct RefinementOverlayView: View {
     }
     
     private func updateImageFrame(imageGeometry: GeometryProxy) {
-        // Get the actual frame of the rendered image in the container's coordinate space
         let frame = imageGeometry.frame(in: .named("refinementContainer"))
         imageFrame = frame
         imageDisplaySize = frame.size
     }
     
-    // FIXED: Add point interpolation
     private func interpolatePoints(from start: CGPoint, to end: CGPoint, spacing: CGFloat) -> [CGPoint] {
         let dx = end.x - start.x
         let dy = end.y - start.y
@@ -785,7 +788,6 @@ struct RefinementOverlayView: View {
         
         tapLocation = location
         
-        // Convert tap location to relative coordinates within the image
         let relativeX = location.x - imageFrame.minX
         let relativeY = location.y - imageFrame.minY
         let relativeLocation = CGPoint(x: relativeX, y: relativeY)
@@ -794,9 +796,7 @@ struct RefinementOverlayView: View {
             let mask = await samManager.generateMask(at: relativeLocation, in: imageDisplaySize)
             await MainActor.run {
                 if let mask = mask {
-                    // Add to history
                     maskHistory.append(mask)
-                    // Recomposite all masks from history
                     self.maskImage = recompositeMaskHistory()
                     self.showConfirmButton = true
                 }
@@ -811,7 +811,6 @@ struct RefinementOverlayView: View {
             return
         }
         
-        // FIXED: Use actual image size, not display size to prevent shifting
         if let drawnMask = createMaskFromPath(currentDrawingPath, brushSize: brushSize, in: imageFrame, imageSize: depthImage.size) {
             maskHistory.append(drawnMask)
             maskImage = recompositeMaskHistory()
@@ -823,7 +822,6 @@ struct RefinementOverlayView: View {
         isDrawing = false
     }
     
-    // FIXED: Completely rewritten to draw smooth continuous paths
     private func createMaskFromPath(_ path: [CGPoint], brushSize: CGFloat, in frame: CGRect, imageSize: CGSize) -> UIImage? {
         let size = imageSize
         
@@ -832,16 +830,13 @@ struct RefinementOverlayView: View {
         
         guard let context = UIGraphicsGetCurrentContext() else { return nil }
         
-        // Set up drawing context for smooth path
         context.setLineCap(.round)
         context.setLineJoin(.round)
         context.setStrokeColor(UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 1.0).cgColor)
         
-        // Scale brush size proportionally to image size
         let scaledBrushSize = brushSize * (size.width / frame.width)
         context.setLineWidth(scaledBrushSize)
         
-        // Convert path points from screen to image coordinates and draw
         if let firstPoint = path.first {
             let imagePoint = convertToImageCoordinates(firstPoint, frame: frame, imageSize: size)
             context.beginPath()
@@ -858,7 +853,6 @@ struct RefinementOverlayView: View {
         return UIGraphicsGetImageFromCurrentImageContext()
     }
     
-    // FIXED: Helper function to convert screen coordinates to image coordinates
     private func convertToImageCoordinates(_ point: CGPoint, frame: CGRect, imageSize: CGSize) -> CGPoint {
         let relativeX = (point.x - frame.minX) / frame.width
         let relativeY = (point.y - frame.minY) / frame.height
@@ -902,19 +896,414 @@ struct RefinementOverlayView: View {
         
         cameraManager.refineWithSecondaryMask(maskImage, imageFrame: imageFrame, depthImageSize: depthImage.size, primaryCroppedCSV: primaryCSV, skipExpansion: hasPenDrawnMasks)
         
-        // Wait for refinement to complete and then proceed
         DispatchQueue.main.asyncAfter(deadline: .now()) {
             onRefinementComplete()
         }
     }
 }
 
-// MARK: - FIXED: Optimized Pen Drawing Overlay (now stays aligned with image)
+// MARK: - Background Selection Overlay View (NEW)
+struct BackgroundSelectionOverlayView: View {
+    let depthImage: UIImage
+    let photo: UIImage?
+    let cameraManager: CameraManager
+    let onBackgroundComplete: () -> Void
+    let onSkip: () -> Void
+    let onDismiss: () -> Void
+    
+    @State private var imageFrame: CGRect = .zero
+    
+    // MobileSAM integration - but applied to depth image
+    @StateObject private var samManager = MobileSAMManager()
+    @State private var maskImage: UIImage?
+    @State private var maskHistory: [UIImage] = []
+    @State private var tapLocation: CGPoint = .zero
+    @State private var imageDisplaySize: CGSize = .zero
+    @State private var isImageEncoded = false
+    @State private var showConfirmButton = false
+    
+    // Pen drawing states
+    @State private var isPenMode = false
+    @State private var brushSize: CGFloat = 30
+    @State private var currentDrawingPath: [CGPoint] = []
+    @State private var isDrawing = false
+    
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            
+            VStack {
+                // Header controls
+                HStack(spacing: 20) {
+                    Button(action: { onDismiss() }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title2)
+                            .foregroundColor(.white)
+                    }
+                    
+                    Spacer()
+                    
+                    Text("Select Background")
+                        .foregroundColor(.purple)
+                        .font(.headline)
+                    
+                    Spacer()
+                    
+                    // Skip button
+                    Button(action: { onSkip() }) {
+                        Image(systemName: "forward.circle.fill")
+                            .font(.title2)
+                            .foregroundColor(.gray)
+                    }
+                    
+                    // Pen mode toggle
+                    Button(action: { isPenMode.toggle() }) {
+                        Image(systemName: isPenMode ? "pencil.circle.fill" : "pencil.circle")
+                            .font(.title2)
+                            .foregroundColor(isPenMode ? .blue : .white)
+                    }
+                    
+                    // Undo button
+                    if !maskHistory.isEmpty {
+                        Button(action: { undoLastMask() }) {
+                            Image(systemName: "arrow.uturn.backward.circle.fill")
+                                .font(.title2)
+                                .foregroundColor(.orange)
+                        }
+                    }
+                    
+                    // Clear button
+                    if !maskHistory.isEmpty && !showConfirmButton {
+                        Button(action: { clearAllMasks() }) {
+                            Image(systemName: "trash.circle.fill")
+                                .font(.title2)
+                                .foregroundColor(.red)
+                        }
+                    }
+                    
+                    // Confirm button
+                    if showConfirmButton {
+                        Button(action: { selectBackgroundSurface() }) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.title2)
+                                .foregroundColor(.green)
+                        }
+                    }
+                }
+                .padding(.horizontal)
+                .frame(height: 44)
+                
+                // Brush size slider (when pen mode is active)
+                if isPenMode {
+                    HStack {
+                        Image(systemName: "circle.fill")
+                            .font(.system(size: 8))
+                            .foregroundColor(.white)
+                        Slider(value: $brushSize, in: 10...100)
+                            .accentColor(.blue)
+                        Image(systemName: "circle.fill")
+                            .font(.system(size: 20))
+                            .foregroundColor(.white)
+                        Text("\(Int(brushSize))")
+                            .foregroundColor(.white)
+                            .frame(width: 35)
+                    }
+                    .padding(.horizontal, 50)
+                }
+                
+                Spacer()
+                
+                // Image overlay with proper coordinate space
+                GeometryReader { geometry in
+                    ZStack {
+                        // Show photo (visual image)
+                        if let photo = photo {
+                            Image(uiImage: photo)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                                .overlay(
+                                    GeometryReader { imageGeometry in
+                                        Color.clear
+                                            .onAppear {
+                                                updateImageFrame(imageGeometry: imageGeometry)
+                                            }
+                                            .onChange(of: imageGeometry.size) { _, _ in
+                                                updateImageFrame(imageGeometry: imageGeometry)
+                                            }
+                                    }
+                                )
+                        } else {
+                            // Fallback to depth image if no photo
+                            Image(uiImage: depthImage)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                                .overlay(
+                                    GeometryReader { imageGeometry in
+                                        Color.clear
+                                            .onAppear {
+                                                updateImageFrame(imageGeometry: imageGeometry)
+                                            }
+                                            .onChange(of: imageGeometry.size) { _, _ in
+                                                updateImageFrame(imageGeometry: imageGeometry)
+                                            }
+                                    }
+                                )
+                        }
+                        
+                        // MobileSAM mask overlay (generated from depth but displayed on photo)
+                        if let mask = maskImage {
+                            Image(uiImage: mask)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                        }
+                        
+                        if isPenMode && !currentDrawingPath.isEmpty {
+                            PenDrawingOverlay(
+                                points: $currentDrawingPath,
+                                brushSize: brushSize,
+                                color: UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 0.7),
+                                imageFrame: imageFrame
+                            )
+                        }
+                        
+                        // Tap indicator
+                        if tapLocation != .zero && !isPenMode {
+                            Circle()
+                                .fill(Color.red)
+                                .frame(width: 12, height: 12)
+                                .position(tapLocation)
+                                .animation(.easeInOut(duration: 0.3), value: tapLocation)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .simultaneousGesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                if isPenMode && imageFrame.contains(value.location) {
+                                    if !isDrawing {
+                                        isDrawing = true
+                                        currentDrawingPath = [value.location]
+                                    } else {
+                                        if let lastPoint = currentDrawingPath.last {
+                                            let interpolatedPoints = interpolatePoints(from: lastPoint, to: value.location, spacing: 2.0)
+                                            currentDrawingPath.append(contentsOf: interpolatedPoints)
+                                        }
+                                        currentDrawingPath.append(value.location)
+                                    }
+                                }
+                            }
+                            .onEnded { _ in
+                                if isPenMode && isDrawing {
+                                    finishDrawing()
+                                }
+                            }
+                    )
+                    .onTapGesture { location in
+                        if !isPenMode {
+                            handleBackgroundTap(at: location)
+                        }
+                    }
+                }
+                .coordinateSpace(name: "backgroundContainer")
+                .padding()
+                
+                Spacer()
+                
+                // Info text
+                Text(getBackgroundInstructionText())
+                    .foregroundColor(.white)
+                    .font(.caption)
+                    .multilineTextAlignment(.center)
+                    .padding()
+                    .frame(minHeight: 60, alignment: .top)
+            }
+        }
+        .onAppear {
+            startBackgroundSegmentation()
+        }
+    }
+    
+    // MARK: - Helper Functions
+    private func getBackgroundInstructionText() -> String {
+        if isPenMode {
+            return "Draw on the background surface. Tap ✓ to apply or skip to use automatic plane."
+        } else if !isImageEncoded {
+            return "Encoding depth image for background selection..."
+        } else if maskImage == nil {
+            return "Tap the background surface (table, plate, etc), or skip to use automatic plane detection."
+        } else {
+            return "Background mask applied! Tap more areas to add, tap ✓ to apply or skip."
+        }
+    }
+    
+    private func updateImageFrame(imageGeometry: GeometryProxy) {
+        let frame = imageGeometry.frame(in: .named("backgroundContainer"))
+        imageFrame = frame
+        imageDisplaySize = frame.size
+    }
+    
+    private func interpolatePoints(from start: CGPoint, to end: CGPoint, spacing: CGFloat) -> [CGPoint] {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let distance = sqrt(dx * dx + dy * dy)
+        
+        guard distance > spacing else { return [] }
+        
+        let steps = Int(distance / spacing)
+        var points: [CGPoint] = []
+        
+        for i in 1..<steps {
+            let t = CGFloat(i) / CGFloat(steps)
+            let x = start.x + dx * t
+            let y = start.y + dy * t
+            points.append(CGPoint(x: x, y: y))
+        }
+        
+        return points
+    }
+    
+    private func startBackgroundSegmentation() {
+        maskImage = nil
+        maskHistory = []
+        tapLocation = .zero
+        showConfirmButton = false
+        isImageEncoded = false
+        
+        // Encode the DEPTH image (not the photo) for segmentation
+        Task {
+            let success = await samManager.encodeImage(depthImage)
+            await MainActor.run {
+                isImageEncoded = success
+            }
+        }
+    }
+    
+    private func handleBackgroundTap(at location: CGPoint) {
+        guard isImageEncoded && !samManager.isLoading && imageFrame.contains(location) else { return }
+        
+        tapLocation = location
+        
+        let relativeX = location.x - imageFrame.minX
+        let relativeY = location.y - imageFrame.minY
+        let relativeLocation = CGPoint(x: relativeX, y: relativeY)
+        
+        Task {
+            // Generate mask from depth image
+            let mask = await samManager.generateMask(at: relativeLocation, in: imageDisplaySize)
+            await MainActor.run {
+                if let mask = mask {
+                    maskHistory.append(mask)
+                    self.maskImage = recompositeMaskHistory()
+                    self.showConfirmButton = true
+                }
+            }
+        }
+    }
+    
+    // MARK: - Pen Drawing Functions
+    private func finishDrawing() {
+        guard !currentDrawingPath.isEmpty else {
+            isDrawing = false
+            return
+        }
+        
+        // Draw on depth image size
+        if let drawnMask = createMaskFromPath(currentDrawingPath, brushSize: brushSize, in: imageFrame, imageSize: depthImage.size) {
+            maskHistory.append(drawnMask)
+            maskImage = recompositeMaskHistory()
+            showConfirmButton = true
+        }
+        
+        currentDrawingPath = []
+        isDrawing = false
+    }
+    
+    private func createMaskFromPath(_ path: [CGPoint], brushSize: CGFloat, in frame: CGRect, imageSize: CGSize) -> UIImage? {
+        let size = imageSize
+        
+        UIGraphicsBeginImageContextWithOptions(size, false, 0.0)
+        defer { UIGraphicsEndImageContext() }
+        
+        guard let context = UIGraphicsGetCurrentContext() else { return nil }
+        
+        context.setLineCap(.round)
+        context.setLineJoin(.round)
+        context.setStrokeColor(UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 1.0).cgColor)
+        
+        let scaledBrushSize = brushSize * (size.width / frame.width)
+        context.setLineWidth(scaledBrushSize)
+        
+        if let firstPoint = path.first {
+            let imagePoint = convertToImageCoordinates(firstPoint, frame: frame, imageSize: size)
+            context.beginPath()
+            context.move(to: imagePoint)
+            
+            for point in path.dropFirst() {
+                let imagePoint = convertToImageCoordinates(point, frame: frame, imageSize: size)
+                context.addLine(to: imagePoint)
+            }
+            
+            context.strokePath()
+        }
+        
+        return UIGraphicsGetImageFromCurrentImageContext()
+    }
+    
+    private func convertToImageCoordinates(_ point: CGPoint, frame: CGRect, imageSize: CGSize) -> CGPoint {
+        let relativeX = (point.x - frame.minX) / frame.width
+        let relativeY = (point.y - frame.minY) / frame.height
+        
+        return CGPoint(
+            x: relativeX * imageSize.width,
+            y: relativeY * imageSize.height
+        )
+    }
+    
+    private func recompositeMaskHistory() -> UIImage? {
+        guard !maskHistory.isEmpty else { return nil }
+        var result = maskHistory[0]
+        for i in 1..<maskHistory.count {
+            result = compositeMasks(result, with: maskHistory[i])
+        }
+        return result
+    }
+    
+    private func undoLastMask() {
+        guard !maskHistory.isEmpty else { return }
+        maskHistory.removeLast()
+        maskImage = recompositeMaskHistory()
+        if maskHistory.isEmpty {
+            showConfirmButton = false
+            tapLocation = .zero
+        }
+    }
+    
+    private func clearAllMasks() {
+        maskHistory = []
+        maskImage = nil
+        tapLocation = .zero
+        showConfirmButton = false
+    }
+    
+    private func selectBackgroundSurface() {
+        guard let maskImage = maskImage else { return }
+        
+        // Extract background surface points from depth data using the mask
+        cameraManager.extractBackgroundSurfacePoints(maskImage, imageFrame: imageFrame, depthImageSize: depthImage.size)
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            onBackgroundComplete()
+        }
+    }
+}
+
+// MARK: - Pen Drawing Overlay
 struct PenDrawingOverlay: UIViewRepresentable {
     @Binding var points: [CGPoint]
     let brushSize: CGFloat
     let color: UIColor
-    let imageFrame: CGRect  // FIXED: Added imageFrame parameter
+    let imageFrame: CGRect
     
     func makeUIView(context: Context) -> PenDrawingCanvasView {
         let view = PenDrawingCanvasView()
@@ -927,28 +1316,25 @@ struct PenDrawingOverlay: UIViewRepresentable {
         uiView.points = points
         uiView.brushSize = brushSize
         uiView.color = color
-        uiView.imageFrame = imageFrame  // FIXED: Pass imageFrame to view
+        uiView.imageFrame = imageFrame
         uiView.setNeedsDisplay()
     }
 }
 
-// FIXED: Completely rewritten canvas view to draw smooth paths
 class PenDrawingCanvasView: UIView {
     var points: [CGPoint] = []
     var brushSize: CGFloat = 30
     var color: UIColor = UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 0.7)
-    var imageFrame: CGRect = .zero  // FIXED: Store image frame
+    var imageFrame: CGRect = .zero
     
     override func draw(_ rect: CGRect) {
         guard let context = UIGraphicsGetCurrentContext(), !points.isEmpty else { return }
         
-        // FIXED: Draw smooth continuous path instead of individual circles
         context.setLineCap(.round)
         context.setLineJoin(.round)
         context.setStrokeColor(color.cgColor)
         context.setLineWidth(brushSize)
         
-        // Draw the path
         if let firstPoint = points.first {
             context.beginPath()
             context.move(to: firstPoint)

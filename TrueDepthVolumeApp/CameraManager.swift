@@ -50,6 +50,7 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
     var maskBoundaryPoints: [(x: Int, y: Int)] = []
     var maskDimensions: CGSize = .zero
     var boundaryDepthPoints: [DepthPoint] = []  // Boundary points with depth values for plane fitting
+    var backgroundSurfacePoints: [DepthPoint] = []  // Store background surface points for plane fitting
 
     override init() {
         super.init()
@@ -1624,4 +1625,132 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         self.boundaryDepthPoints = depthPoints
         print("✅ Successfully converted \(depthPoints.count) boundary points with depth values")
     }
+    
+    // MARK: - Extract Background Surface Points
+        func extractBackgroundSurfacePoints(_ maskImage: UIImage, imageFrame: CGRect, depthImageSize: CGSize) {
+            print("\n🎯 EXTRACTING BACKGROUND SURFACE POINTS FROM MASK")
+            print(String(repeating: "=", count: 60))
+            
+            guard let maskCGImage = maskImage.cgImage else { return }
+            
+            let width = maskCGImage.width
+            let height = maskCGImage.height
+            
+            // Extract mask data
+            var maskData = [UInt8](repeating: 0, count: width * height * 4)
+            let colorSpace = CGColorSpaceCreateDeviceRGB()
+            var maskContext = CGContext(
+                data: &maskData,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width * 4,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )
+            maskContext?.draw(maskCGImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+            
+            // Find all masked pixels
+            var maskedPixels: [(x: Int, y: Int)] = []
+            for y in 0..<height {
+                for x in 0..<width {
+                    let index = (y * width + x) * 4
+                    if maskData[index] > 128 {
+                        maskedPixels.append((x: x, y: y))
+                    }
+                }
+            }
+            
+            print("Found \(maskedPixels.count) masked pixels")
+            
+            // Convert to depth points with Z values
+            var depthPoints: [DepthPoint] = []
+            
+            // Determine original depth data dimensions
+            var originalWidth: Int = 0
+            var originalHeight: Int = 0
+            
+            if !uploadedCSVData.isEmpty {
+                // Get dimensions from uploaded CSV
+                let maxX = Int(ceil(uploadedCSVData.map { $0.x }.max() ?? 0))
+                let maxY = Int(ceil(uploadedCSVData.map { $0.y }.max() ?? 0))
+                originalWidth = maxX + 1
+                originalHeight = maxY + 1
+                
+                print("Using uploaded CSV data: \(originalWidth) x \(originalHeight)")
+                
+                // Create a lookup map for fast depth access
+                var depthMap: [String: Float] = [:]
+                for point in uploadedCSVData {
+                    let key = "\(Int(point.x)),\(Int(point.y))"
+                    depthMap[key] = point.depth
+                }
+                
+                // Convert each masked pixel
+                for maskedPixel in maskedPixels {
+                    // Convert mask coordinates to original depth coordinates
+                    let originalY = originalHeight - 1 - Int((Float(maskedPixel.x) / Float(width)) * Float(originalHeight))
+                    let originalX = Int((Float(maskedPixel.y) / Float(height)) * Float(originalWidth))
+                    
+                    // Get depth value
+                    let key = "\(originalX),\(originalY)"
+                    if let depth = depthMap[key] {
+                        depthPoints.append(DepthPoint(x: Float(originalX), y: Float(originalY), depth: depth))
+                    }
+                }
+                
+            } else if let depthData = rawDepthData {
+                // Convert depth data if needed
+                let processedDepthData: AVDepthData
+                if depthData.depthDataType == kCVPixelFormatType_DisparityFloat16 ||
+                   depthData.depthDataType == kCVPixelFormatType_DisparityFloat32 {
+                    do {
+                        processedDepthData = try depthData.converting(toDepthDataType: kCVPixelFormatType_DepthFloat32)
+                    } catch {
+                        print("Failed to convert depth data")
+                        return
+                    }
+                } else {
+                    do {
+                        processedDepthData = try depthData.converting(toDepthDataType: kCVPixelFormatType_DepthFloat32)
+                    } catch {
+                        print("Failed to convert depth data")
+                        return
+                    }
+                }
+                
+                let depthMap = processedDepthData.depthDataMap
+                CVPixelBufferLockBaseAddress(depthMap, .readOnly)
+                defer { CVPixelBufferUnlockBaseAddress(depthMap, .readOnly) }
+                
+                originalWidth = CVPixelBufferGetWidth(depthMap)
+                originalHeight = CVPixelBufferGetHeight(depthMap)
+                let floatBuffer = CVPixelBufferGetBaseAddress(depthMap)!.bindMemory(to: Float32.self, capacity: originalWidth * originalHeight)
+                let bytesPerRow = CVPixelBufferGetBytesPerRow(depthMap)
+                
+                print("Using raw depth data: \(originalWidth) x \(originalHeight)")
+                
+                // Convert each masked pixel
+                for maskedPixel in maskedPixels {
+                    // Convert mask coordinates to original depth coordinates
+                    let originalY = originalHeight - 1 - Int((Float(maskedPixel.x) / Float(width)) * Float(originalHeight))
+                    let originalX = Int((Float(maskedPixel.y) / Float(height)) * Float(originalWidth))
+                    
+                    // Get depth value
+                    if originalX >= 0 && originalX < originalWidth && originalY >= 0 && originalY < originalHeight {
+                        let pixelIndex = originalY * (bytesPerRow / MemoryLayout<Float32>.stride) + originalX
+                        let depthValue = floatBuffer[pixelIndex]
+                        
+                        if !depthValue.isNaN && !depthValue.isInfinite && depthValue > 0 {
+                            depthPoints.append(DepthPoint(x: Float(originalX), y: Float(originalY), depth: depthValue))
+                        }
+                    }
+                }
+            }
+            
+            // Store for use by 3D visualization
+            self.backgroundSurfacePoints = depthPoints
+            print("✅ Successfully extracted \(depthPoints.count) background surface points with depth values")
+            print(String(repeating: "=", count: 60) + "\n")
+        }
 }
