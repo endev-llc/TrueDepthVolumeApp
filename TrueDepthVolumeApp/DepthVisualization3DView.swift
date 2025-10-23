@@ -1247,31 +1247,52 @@ struct DepthVisualization3DView: View {
     private func createPlaneVisualizationGeometry(hull: [(x: Int, y: Int)], plane: (a: Float, b: Float, c: Float), voxelSize: Float, min: SCNVector3) -> SCNGeometry? {
         guard hull.count >= 3 else { return nil }
         
-        print("🎨 Creating plane visualization with \(hull.count) hull points")
+        print("🎨 Creating extended plane visualization")
         
-        // Convert hull points to 3D vertices using plane equation for Z values
+        // Find bounds of hull points
+        let minHullX = hull.map { $0.x }.min() ?? 0
+        let maxHullX = hull.map { $0.x }.max() ?? 0
+        let minHullY = hull.map { $0.y }.min() ?? 0
+        let maxHullY = hull.map { $0.y }.max() ?? 0
+        
+        // Extend the bounds significantly (5x in each direction for "infinite" appearance)
+        let extensionFactor: Float = 20.0
+        let rangeX = Float(maxHullX - minHullX)
+        let rangeY = Float(maxHullY - minHullY)
+        let extendedMinX = Int(Float(minHullX) - rangeX * extensionFactor)
+        let extendedMaxX = Int(Float(maxHullX) + rangeX * extensionFactor)
+        let extendedMinY = Int(Float(minHullY) - rangeY * extensionFactor)
+        let extendedMaxY = Int(Float(maxHullY) + rangeY * extensionFactor)
+        
+        // Create 4 corners of extended rectangular plane
+        let corners = [
+            (x: extendedMinX, y: extendedMinY),
+            (x: extendedMaxX, y: extendedMinY),
+            (x: extendedMaxX, y: extendedMaxY),
+            (x: extendedMinX, y: extendedMaxY)
+        ]
+        
+        // Convert corners to 3D vertices using plane equation for Z values (UNCHANGED)
         var vertices: [SCNVector3] = []
-        for point in hull {
+        for point in corners {
             let x = min.x + (Float(point.x) + 0.5) * voxelSize
             let y = min.y + (Float(point.y) + 0.5) * voxelSize
             
-            // Calculate Z using plane equation
+            // Calculate Z using plane equation (SAME AS BEFORE)
             let z = plane.a * Float(point.x) + plane.b * Float(point.y) + plane.c
             let z3D = min.z + (z + 0.5) * voxelSize
             
             vertices.append(SCNVector3(x, y, z3D))
-//            print("  Plane vertex: (\(point.x), \(point.y)) -> Plane Z=\(Int(round(z))) -> 3D: (\(x), \(y), \(z3D))")
+            print("  Extended plane vertex: (\(point.x), \(point.y)) -> Plane Z=\(Int(round(z))) -> 3D: (\(x), \(y), \(z3D))")
         }
         
-        // Triangulate using fan triangulation from first vertex
-        var indices: [UInt32] = []
-        for i in 1..<(vertices.count - 1) {
-            indices.append(0)
-            indices.append(UInt32(i))
-            indices.append(UInt32(i + 1))
-        }
+        // Create two triangles to form the rectangle
+        let indices: [UInt32] = [
+            0, 1, 2,  // First triangle
+            0, 2, 3   // Second triangle
+        ]
         
-        // Create geometry
+        // Create geometry (UNCHANGED)
         let vertexData = Data(bytes: vertices, count: vertices.count * MemoryLayout<SCNVector3>.size)
         let vertexSource = SCNGeometrySource(
             data: vertexData,
@@ -1299,7 +1320,7 @@ struct DepthVisualization3DView: View {
         material.isDoubleSided = true
         geometry.materials = [material]
         
-        print("✨ Plane geometry created with \(vertices.count) vertices, \(indices.count/3) triangles")
+        print("✨ Extended plane geometry created with \(vertices.count) vertices, \(indices.count/3) triangles")
         
         return geometry
     }
