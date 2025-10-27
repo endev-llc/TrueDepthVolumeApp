@@ -1170,9 +1170,10 @@ struct BackgroundSelectionOverlayView: View {
         showConfirmButton = false
         isImageEncoded = false
         
-        // Encode the DEPTH image (not the photo) for segmentation
+        // Encode the PHOTO image (not the depth) for segmentation
+        let imageToSegment = photo ?? depthImage
         Task {
-            let success = await samManager.encodeImage(depthImage)
+            let success = await samManager.encodeImage(imageToSegment)
             await MainActor.run {
                 isImageEncoded = success
             }

@@ -655,8 +655,8 @@ struct DepthVisualization3DView: View {
         let correctedCx = intrinsics.cx * resolutionScaleX
         let correctedCy = intrinsics.cy * resolutionScaleY
         
-        // Calculate average depth ONCE
-        let averageDepth = points.reduce(0.0) { $0 + $1.depth } / Float(points.count)
+        // averageDepth is currently set to the minimum depth value found in the user-selected primary object
+        let averageDepth = points.map { $0.depth }.min() ?? 0
         
         // Vectorized conversion (process in batches if needed)
         var measurementPoints3D = [SCNVector3]()
