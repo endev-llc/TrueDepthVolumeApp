@@ -1209,8 +1209,10 @@ struct BackgroundSelectionOverlayView: View {
             return
         }
         
-        // Draw on depth image size
-        if let drawnMask = createMaskFromPath(currentDrawingPath, brushSize: brushSize, in: imageFrame, imageSize: depthImage.size) {
+        // ⭐ FIX: Use same image size as MobileSAM (photo if available, otherwise depth)
+        let imageToUse = photo ?? depthImage
+        
+        if let drawnMask = createMaskFromPath(currentDrawingPath, brushSize: brushSize, in: imageFrame, imageSize: imageToUse.size) {
             maskHistory.append(drawnMask)
             maskImage = recompositeMaskHistory()
             showConfirmButton = true
