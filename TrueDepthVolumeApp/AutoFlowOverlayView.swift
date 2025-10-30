@@ -1194,12 +1194,67 @@ struct BackgroundSelectionOverlayView: View {
             let mask = await samManager.generateMask(at: relativeLocation, in: imageDisplaySize)
             await MainActor.run {
                 if let mask = mask {
-                    maskHistory.append(mask)
+                    // ⭐ NEW: Filter out top and bottom 5%
+                    let filteredMask = filterTopAndBottom5Percent(mask)
+                    maskHistory.append(filteredMask)
                     self.maskImage = recompositeMaskHistory()
                     self.showConfirmButton = true
                 }
             }
         }
+    }
+
+    // ⭐ NEW: Simple function to zero out top and bottom 5% of mask
+    private func filterTopAndBottom5Percent(_ mask: UIImage) -> UIImage {
+        guard let cgImage = mask.cgImage else { return mask }
+        
+        let width = cgImage.width
+        let height = cgImage.height
+        
+        // Extract mask data
+        var maskData = [UInt8](repeating: 0, count: width * height * 4)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        var context = CGContext(
+            data: &maskData,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )
+        context?.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        
+        // Zero out top 5% and bottom 5% rows
+        let topCutoff = Int(Double(height) * 0.05)
+        let bottomCutoff = height - topCutoff
+        
+        for y in 0..<height {
+            if y < topCutoff || y >= bottomCutoff {
+                for x in 0..<width {
+                    let index = (y * width + x) * 4
+                    maskData[index] = 0
+                    maskData[index + 1] = 0
+                    maskData[index + 2] = 0
+                    maskData[index + 3] = 0
+                }
+            }
+        }
+        
+        // Create filtered image
+        guard let filteredContext = CGContext(
+            data: &maskData,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let filteredCGImage = filteredContext.makeImage() else {
+            return mask
+        }
+        
+        return UIImage(cgImage: filteredCGImage, scale: mask.scale, orientation: mask.imageOrientation)
     }
     
     // MARK: - Pen Drawing Functions
