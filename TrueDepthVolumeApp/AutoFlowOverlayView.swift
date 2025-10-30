@@ -1076,6 +1076,22 @@ struct BackgroundSelectionOverlayView: View {
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .overlay(
+                        GeometryReader { geo in
+                            VStack(spacing: 0) {
+                                Rectangle()
+                                    .fill(Color.black)
+                                    .frame(height: geo.size.height * 0.05)
+                                
+                                Spacer()
+                                
+                                Rectangle()
+                                    .fill(Color.black)
+                                    .frame(height: geo.size.height * 0.05)
+                            }
+                            .allowsHitTesting(false)
+                        }
+                    )
                     .contentShape(Rectangle())
                     .simultaneousGesture(
                         DragGesture(minimumDistance: 0)
