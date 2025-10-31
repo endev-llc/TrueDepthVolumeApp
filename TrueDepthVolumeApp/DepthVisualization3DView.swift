@@ -502,8 +502,12 @@ struct DepthVisualization3DView: View {
             }
         }
         
+        // ✅ Return nil for now - depth dimensions will be calculated in create3DScene
         if let fx = fx, let fy = fy, let cx = cx, let cy = cy, let width = width, let height = height {
-            return CameraIntrinsics(fx: fx, fy: fy, cx: cx, cy: cy, width: width, height: height)
+            // Temporary values - will be updated with actual depth map dimensions
+            return CameraIntrinsics(fx: fx, fy: fy, cx: cx, cy: cy,
+                                   width: width, height: height,
+                                   depthWidth: 0, depthHeight: 0)  // Placeholder
         }
         return nil
     }
@@ -513,7 +517,29 @@ struct DepthVisualization3DView: View {
         
         let scene = SCNScene()
         
-        // Convert to 3D
+        // ✅ CRITICAL: Calculate depth map dimensions from ORIGINAL data FIRST
+        let depthMapWidth = Float((originalDepthPoints.map { $0.x }.max() ?? 0)) + 1
+        let depthMapHeight = Float((originalDepthPoints.map { $0.y }.max() ?? 0)) + 1
+        
+        print("\n📐 DEPTH MAP DIMENSIONS FROM ORIGINAL DATA:")
+        print("  Depth Map Width: \(depthMapWidth)")
+        print("  Depth Map Height: \(depthMapHeight)")
+        
+        // Update cameraIntrinsics with depth map dimensions
+        if let intrinsics = self.cameraIntrinsics {
+            self.cameraIntrinsics = CameraIntrinsics(
+                fx: intrinsics.fx,
+                fy: intrinsics.fy,
+                cx: intrinsics.cx,
+                cy: intrinsics.cy,
+                width: intrinsics.width,
+                height: intrinsics.height,
+                depthWidth: depthMapWidth,
+                depthHeight: depthMapHeight
+            )
+        }
+        
+        // NOW convert to 3D (with updated intrinsics)
         var primaryMeasurementPoints3D = convertDepthPointsTo3D(filteredDepthPoints)
         timer.lap("Converted primary points to 3D")
         
@@ -647,15 +673,17 @@ struct DepthVisualization3DView: View {
             return []
         }
         
-        // ✅ DYNAMICALLY CALCULATE depth map dimensions from the CSV data
-        let depthMapWidth = Float((points.map { $0.x }.max() ?? 0)) + 1
-        let depthMapHeight = Float((points.map { $0.y }.max() ?? 0)) + 1
+        // ✅ No fallback - use the stored dimensions directly
+        let depthMapWidth = intrinsics.depthWidth
+        let depthMapHeight = intrinsics.depthHeight
         
         print("\nCAMERA INTRINSICS DIMENSIONS:")
         print("Reference Width: \(intrinsics.width)")
         print("Reference Height: \(intrinsics.height)")
         print("Depth Map Width: \(depthMapWidth)")
         print("Depth Map Height: \(depthMapHeight)")
+        print("fx: \(intrinsics.fx), fy: \(intrinsics.fy)")
+        print("cx: \(intrinsics.cx), cy: \(intrinsics.cy)")
         
         // ✅ Use DYNAMIC depth map dimensions instead of hardcoded 640x360
         let resolutionScaleX: Float = depthMapWidth / intrinsics.width

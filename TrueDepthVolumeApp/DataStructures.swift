@@ -10,12 +10,14 @@ struct DepthPoint {
 
 // MARK: - Camera Intrinsics Structure
 struct CameraIntrinsics {
-    let fx: Float     // Focal length X
-    let fy: Float     // Focal length Y
-    let cx: Float     // Principal point X
-    let cy: Float     // Principal point Y
-    let width: Float  // Reference width
-    let height: Float // Reference height
+    let fx: Float
+    let fy: Float
+    let cx: Float
+    let cy: Float
+    let width: Float
+    let height: Float
+    let depthWidth: Float     // ✅ Required, no optional
+    let depthHeight: Float    // ✅ Required, no optional
 }
 
 // MARK: - Volume Information Structure
