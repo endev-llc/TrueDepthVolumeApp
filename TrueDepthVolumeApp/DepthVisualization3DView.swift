@@ -647,9 +647,14 @@ struct DepthVisualization3DView: View {
             return []
         }
         
+        // Print intrinsics dimensions
+        print("\nCAMERA INTRINSICS DIMENSIONS:")
+        print("Width: \(intrinsics.width)")
+        print("Height: \(intrinsics.height)")
+        
         // Scale intrinsics
-        let resolutionScaleX: Float = 640.0 / 4032.0
-        let resolutionScaleY: Float = 360.0 / 2268.0
+        let resolutionScaleX: Float = 640.0 / intrinsics.width   // ✅ Dynamic
+        let resolutionScaleY: Float = 360.0 / intrinsics.height  // ✅ Dynamic
         let correctedFx = intrinsics.fx * resolutionScaleX
         let correctedFy = intrinsics.fy * resolutionScaleY
         let correctedCx = intrinsics.cx * resolutionScaleX
