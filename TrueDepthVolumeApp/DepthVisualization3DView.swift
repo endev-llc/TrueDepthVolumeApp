@@ -647,14 +647,19 @@ struct DepthVisualization3DView: View {
             return []
         }
         
-        // Print intrinsics dimensions
-        print("\nCAMERA INTRINSICS DIMENSIONS:")
-        print("Width: \(intrinsics.width)")
-        print("Height: \(intrinsics.height)")
+        // ✅ DYNAMICALLY CALCULATE depth map dimensions from the CSV data
+        let depthMapWidth = Float((points.map { $0.x }.max() ?? 0)) + 1
+        let depthMapHeight = Float((points.map { $0.y }.max() ?? 0)) + 1
         
-        // Scale intrinsics
-        let resolutionScaleX: Float = 640.0 / intrinsics.width   // ✅ Dynamic
-        let resolutionScaleY: Float = 360.0 / intrinsics.height  // ✅ Dynamic
+        print("\nCAMERA INTRINSICS DIMENSIONS:")
+        print("Reference Width: \(intrinsics.width)")
+        print("Reference Height: \(intrinsics.height)")
+        print("Depth Map Width: \(depthMapWidth)")
+        print("Depth Map Height: \(depthMapHeight)")
+        
+        // ✅ Use DYNAMIC depth map dimensions instead of hardcoded 640x360
+        let resolutionScaleX: Float = depthMapWidth / intrinsics.width
+        let resolutionScaleY: Float = depthMapHeight / intrinsics.height
         let correctedFx = intrinsics.fx * resolutionScaleX
         let correctedFy = intrinsics.fy * resolutionScaleY
         let correctedCx = intrinsics.cx * resolutionScaleX
@@ -663,7 +668,6 @@ struct DepthVisualization3DView: View {
         // averageDepth is currently set to the minimum depth value found in the user-selected primary object
         let averageDepth = points.map { $0.depth }.min() ?? 0
         
-        // Vectorized conversion (process in batches if needed)
         var measurementPoints3D = [SCNVector3]()
         measurementPoints3D.reserveCapacity(points.count)
         
