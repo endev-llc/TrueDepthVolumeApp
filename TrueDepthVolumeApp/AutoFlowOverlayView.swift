@@ -14,44 +14,26 @@ struct AutoFlowOverlayView: View {
     let cameraManager: CameraManager
     let onComplete: () -> Void
     
-    @State private var flowState: FlowState = .primarySegmentation
+    @State private var flowState: FlowState = .unifiedSegmentation
     @State private var primaryCroppedCSV: URL?
     @State private var show3DView = false
     
     enum FlowState {
-        case primarySegmentation
-        case refinement
+        case unifiedSegmentation
         case backgroundSelection
         case completed
     }
     
     var body: some View {
         ZStack {
-            // Primary segmentation phase
-            if flowState == .primarySegmentation {
-                AutoSegmentOverlayView(
+            // Unified segmentation phase (combines primary + refinement)
+            if flowState == .unifiedSegmentation {
+                UnifiedSegmentOverlayView(
                     depthImage: depthImage,
                     photo: photo,
                     cameraManager: cameraManager,
-                    onPrimaryComplete: { croppedCSV in
+                    onComplete: { croppedCSV in
                         primaryCroppedCSV = croppedCSV
-                        flowState = .refinement
-                    },
-                    onDismiss: onComplete
-                )
-            }
-            
-            // Refinement phase
-            if flowState == .refinement {
-                RefinementOverlayView(
-                    depthImage: cameraManager.croppedPhoto ?? depthImage,
-                    photo: cameraManager.croppedPhoto,
-                    cameraManager: cameraManager,
-                    primaryCroppedCSV: primaryCroppedCSV,
-                    onRefinementComplete: {
-                        flowState = .backgroundSelection
-                    },
-                    onSkip: {
                         flowState = .backgroundSelection
                     },
                     onDismiss: onComplete
@@ -95,25 +77,31 @@ struct AutoFlowOverlayView: View {
     }
 }
 
-// MARK: - Auto-Segment Overlay View (Primary Phase)
-struct AutoSegmentOverlayView: View {
+// MARK: - Unified Segment Overlay View (Primary + Refinement Combined)
+struct UnifiedSegmentOverlayView: View {
     let depthImage: UIImage
     let photo: UIImage?
     let cameraManager: CameraManager
-    let onPrimaryComplete: (URL?) -> Void
+    let onComplete: (URL?) -> Void
     let onDismiss: () -> Void
     
     @State private var photoOpacity: Double = 0.7
-    @State private var showingDepthOnly = false
     @State private var imageFrame: CGRect = .zero
     
-    // MobileSAM integration
-    @StateObject private var samManager = MobileSAMManager()
-    @State private var maskImage: UIImage?
-    @State private var maskHistory: [UIImage] = []
+    // Dual MobileSAM integration - one for depth (primary), one for photo (refinement)
+    @StateObject private var samManagerDepth = MobileSAMManager()
+    @StateObject private var samManagerPhoto = MobileSAMManager()
+    @State private var primaryMaskImage: UIImage?
+    @State private var refinementMaskImage: UIImage?
+    @State private var primaryMaskHistory: [UIImage] = []
+    @State private var refinementMaskHistory: [UIImage] = []
+    // NEW: Store original uncolored masks for processing
+    @State private var primaryOriginalMasks: [UIImage] = []
+    @State private var refinementOriginalMasks: [UIImage] = []
     @State private var tapLocation: CGPoint = .zero
     @State private var imageDisplaySize: CGSize = .zero
-    @State private var isImageEncoded = false
+    @State private var isDepthEncoded = false
+    @State private var isPhotoEncoded = false
     @State private var showConfirmButton = false
     
     // Pen drawing states
@@ -122,6 +110,7 @@ struct AutoSegmentOverlayView: View {
     @State private var currentDrawingPath: [CGPoint] = []
     @State private var isDrawing = false
     @State private var hasPenDrawnMasks = false
+    @State private var isDrawingPrimary = true // Toggle between primary and refinement pen drawing
     
     var body: some View {
         ZStack {
@@ -138,21 +127,34 @@ struct AutoSegmentOverlayView: View {
                     
                     Spacer()
                     
-                    Text("Select Primary")
+                    Text("Select Primary & Contents")
                         .foregroundColor(.white)
                         .font(.headline)
                     
                     Spacer()
                     
-                    // Pen mode toggle
-                    Button(action: { isPenMode.toggle() }) {
+                    // Pen mode toggle with color indicator
+                    Button(action: {
+                        isPenMode.toggle()
+                    }) {
                         Image(systemName: isPenMode ? "pencil.circle.fill" : "pencil.circle")
                             .font(.title2)
-                            .foregroundColor(isPenMode ? .blue : .white)
+                            .foregroundColor(isPenMode ? (isDrawingPrimary ? .blue : .yellow) : .white)
+                    }
+                    
+                    // Toggle between primary/refinement pen mode
+                    if isPenMode {
+                        Button(action: { isDrawingPrimary.toggle() }) {
+                            Text(isDrawingPrimary ? "P" : "R")
+                                .font(.headline)
+                                .foregroundColor(isDrawingPrimary ? .blue : .yellow)
+                                .frame(width: 30, height: 30)
+                                .background(Circle().stroke(isDrawingPrimary ? Color.blue : Color.yellow, lineWidth: 2))
+                        }
                     }
                     
                     // Undo button
-                    if !maskHistory.isEmpty {
+                    if !primaryMaskHistory.isEmpty || !refinementMaskHistory.isEmpty {
                         Button(action: { undoLastMask() }) {
                             Image(systemName: "arrow.uturn.backward.circle.fill")
                                 .font(.title2)
@@ -161,7 +163,7 @@ struct AutoSegmentOverlayView: View {
                     }
                     
                     // Clear button
-                    if !maskHistory.isEmpty && !showConfirmButton {
+                    if (!primaryMaskHistory.isEmpty || !refinementMaskHistory.isEmpty) && !showConfirmButton {
                         Button(action: { clearAllMasks() }) {
                             Image(systemName: "trash.circle.fill")
                                 .font(.title2)
@@ -171,7 +173,7 @@ struct AutoSegmentOverlayView: View {
                     
                     // Confirm button
                     if showConfirmButton {
-                        Button(action: { cropCSVWithMask() }) {
+                        Button(action: { applyMasks() }) {
                             Image(systemName: "checkmark.circle.fill")
                                 .font(.title2)
                                 .foregroundColor(.green)
@@ -188,7 +190,7 @@ struct AutoSegmentOverlayView: View {
                             .font(.system(size: 8))
                             .foregroundColor(.white)
                         Slider(value: $brushSize, in: 10...100)
-                            .accentColor(.blue)
+                            .accentColor(isDrawingPrimary ? .blue : .yellow)
                         Image(systemName: "circle.fill")
                             .font(.system(size: 20))
                             .foregroundColor(.white)
@@ -199,8 +201,8 @@ struct AutoSegmentOverlayView: View {
                     .padding(.horizontal, 50)
                 }
                 
-                // Opacity slider (only show if photo exists and not depth only and not in pen mode)
-                if !showingDepthOnly && photo != nil && !isPenMode {
+                // Opacity slider (only show if photo exists and not in pen mode)
+                if photo != nil && !isPenMode {
                     HStack {
                         Image(systemName: "photo")
                             .foregroundColor(.white)
@@ -234,15 +236,22 @@ struct AutoSegmentOverlayView: View {
                             )
                         
                         // Photo (top layer with opacity)
-                        if !showingDepthOnly, let photo = photo {
+                        if let photo = photo {
                             Image(uiImage: photo)
                                 .resizable()
                                 .aspectRatio(contentMode: .fit)
                                 .opacity(photoOpacity)
                         }
                         
-                        // MobileSAM mask overlay
-                        if let mask = maskImage {
+                        // Primary mask overlay (blue tint)
+                        if let mask = primaryMaskImage {
+                            Image(uiImage: mask)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                        }
+                        
+                        // Refinement mask overlay (yellow tint)
+                        if let mask = refinementMaskImage {
                             Image(uiImage: mask)
                                 .resizable()
                                 .aspectRatio(contentMode: .fit)
@@ -253,417 +262,9 @@ struct AutoSegmentOverlayView: View {
                             PenDrawingOverlay(
                                 points: $currentDrawingPath,
                                 brushSize: brushSize,
-                                color: UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 0.7),
-                                imageFrame: imageFrame
-                            )
-                        }
-                        
-                        // Tap indicator for auto-segmentation
-                        if tapLocation != .zero && !isPenMode {
-                            Circle()
-                                .fill(Color.red)
-                                .frame(width: 12, height: 12)
-                                .position(tapLocation)
-                                .animation(.easeInOut(duration: 0.3), value: tapLocation)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .contentShape(Rectangle())
-                    .simultaneousGesture(
-                        DragGesture(minimumDistance: 0)
-                            .onChanged { value in
-                                if isPenMode && imageFrame.contains(value.location) {
-                                    if !isDrawing {
-                                        isDrawing = true
-                                        currentDrawingPath = [value.location]
-                                    } else {
-                                        if let lastPoint = currentDrawingPath.last {
-                                            let interpolatedPoints = interpolatePoints(from: lastPoint, to: value.location, spacing: 2.0)
-                                            currentDrawingPath.append(contentsOf: interpolatedPoints)
-                                        }
-                                        currentDrawingPath.append(value.location)
-                                    }
-                                }
-                            }
-                            .onEnded { _ in
-                                if isPenMode && isDrawing {
-                                    finishDrawing()
-                                }
-                            }
-                    )
-                    .onTapGesture { location in
-                        if !isPenMode {
-                            handleAutoSegmentTap(at: location)
-                        }
-                    }
-                }
-                .coordinateSpace(name: "imageContainer")
-                .padding()
-                
-                Spacer()
-                
-                // Info text
-                Text(getInstructionText())
-                    .foregroundColor(.white)
-                    .font(.caption)
-                    .multilineTextAlignment(.center)
-                    .padding()
-                    .frame(minHeight: 60, alignment: .top)
-                
-                // Error message for MobileSAM
-                if let errorMessage = samManager.errorMessage {
-                    errorMessageView(errorMessage)
-                }
-            }
-        }
-        .onAppear {
-            startAutoSegmentation()
-        }
-    }
-    
-    // MARK: - Helper Views
-    
-    private func errorMessageView(_ message: String) -> some View {
-        VStack {
-            Spacer()
-            
-            HStack {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundColor(.red)
-                
-                Text(message)
-                    .foregroundColor(.white)
-                    .font(.body)
-            }
-            .padding()
-            .background(Color.red.opacity(0.2))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.red, lineWidth: 1)
-            )
-            .cornerRadius(8)
-            .padding()
-        }
-    }
-    
-    // MARK: - Helper Functions
-    private func getInstructionText() -> String {
-        if isPenMode {
-            return "Draw on the primary object with your finger. Tap ✓ when done."
-        } else if !isImageEncoded {
-            return "Encoding image for AI segmentation..."
-        } else if maskImage == nil {
-            return "Tap anywhere on the primary object you want to measure."
-        } else {
-            return "AI mask applied! Tap more areas to add to mask, or tap ✓ when done."
-        }
-    }
-    
-    private func updateImageFrame(imageGeometry: GeometryProxy) {
-        let frame = imageGeometry.frame(in: .named("imageContainer"))
-        imageFrame = frame
-        imageDisplaySize = frame.size
-    }
-    
-    private func interpolatePoints(from start: CGPoint, to end: CGPoint, spacing: CGFloat) -> [CGPoint] {
-        let dx = end.x - start.x
-        let dy = end.y - start.y
-        let distance = sqrt(dx * dx + dy * dy)
-        
-        guard distance > spacing else { return [] }
-        
-        let steps = Int(distance / spacing)
-        var points: [CGPoint] = []
-        
-        for i in 1..<steps {
-            let t = CGFloat(i) / CGFloat(steps)
-            let x = start.x + dx * t
-            let y = start.y + dy * t
-            points.append(CGPoint(x: x, y: y))
-        }
-        
-        return points
-    }
-    
-    // MARK: - Auto-Segmentation Functions
-    private func startAutoSegmentation() {
-        maskImage = nil
-        maskHistory = []
-        tapLocation = .zero
-        showConfirmButton = false
-        isImageEncoded = false
-        hasPenDrawnMasks = false
-        
-        Task {
-            let success = await samManager.encodeImage(depthImage)
-            await MainActor.run {
-                isImageEncoded = success
-            }
-        }
-    }
-    
-    private func handleAutoSegmentTap(at location: CGPoint) {
-        guard isImageEncoded && !samManager.isLoading && imageFrame.contains(location) else { return }
-        
-        tapLocation = location
-        
-        let relativeX = location.x - imageFrame.minX
-        let relativeY = location.y - imageFrame.minY
-        let relativeLocation = CGPoint(x: relativeX, y: relativeY)
-        
-        Task {
-            let mask = await samManager.generateMask(at: relativeLocation, in: imageDisplaySize)
-            await MainActor.run {
-                if let mask = mask {
-                    maskHistory.append(mask)
-                    self.maskImage = recompositeMaskHistory()
-                    self.showConfirmButton = true
-                }
-            }
-        }
-    }
-    
-    // MARK: - Pen Drawing Functions
-    private func finishDrawing() {
-        guard !currentDrawingPath.isEmpty else {
-            isDrawing = false
-            return
-        }
-        
-        if let drawnMask = createMaskFromPath(currentDrawingPath, brushSize: brushSize, in: imageFrame, imageSize: depthImage.size) {
-            maskHistory.append(drawnMask)
-            maskImage = recompositeMaskHistory()
-            showConfirmButton = true
-            hasPenDrawnMasks = true
-        }
-        
-        currentDrawingPath = []
-        isDrawing = false
-    }
-    
-    private func createMaskFromPath(_ path: [CGPoint], brushSize: CGFloat, in frame: CGRect, imageSize: CGSize) -> UIImage? {
-        let size = imageSize
-        
-        UIGraphicsBeginImageContextWithOptions(size, false, 0.0)
-        defer { UIGraphicsEndImageContext() }
-        
-        guard let context = UIGraphicsGetCurrentContext() else { return nil }
-        
-        context.setLineCap(.round)
-        context.setLineJoin(.round)
-        context.setStrokeColor(UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 1.0).cgColor)
-        
-        let scaledBrushSize = brushSize * (size.width / frame.width)
-        context.setLineWidth(scaledBrushSize)
-        
-        if let firstPoint = path.first {
-            let imagePoint = convertToImageCoordinates(firstPoint, frame: frame, imageSize: size)
-            context.beginPath()
-            context.move(to: imagePoint)
-            
-            for point in path.dropFirst() {
-                let imagePoint = convertToImageCoordinates(point, frame: frame, imageSize: size)
-                context.addLine(to: imagePoint)
-            }
-            
-            context.strokePath()
-        }
-        
-        return UIGraphicsGetImageFromCurrentImageContext()
-    }
-    
-    private func convertToImageCoordinates(_ point: CGPoint, frame: CGRect, imageSize: CGSize) -> CGPoint {
-        let relativeX = (point.x - frame.minX) / frame.width
-        let relativeY = (point.y - frame.minY) / frame.height
-        
-        return CGPoint(
-            x: relativeX * imageSize.width,
-            y: relativeY * imageSize.height
-        )
-    }
-    
-    private func recompositeMaskHistory() -> UIImage? {
-        guard !maskHistory.isEmpty else { return nil }
-        var result = maskHistory[0]
-        for i in 1..<maskHistory.count {
-            result = compositeMasks(result, with: maskHistory[i])
-        }
-        return result
-    }
-    
-    private func undoLastMask() {
-        guard !maskHistory.isEmpty else { return }
-        maskHistory.removeLast()
-        maskImage = recompositeMaskHistory()
-        if maskHistory.isEmpty {
-            showConfirmButton = false
-            tapLocation = .zero
-        }
-    }
-    
-    private func clearAllMasks() {
-        maskHistory = []
-        maskImage = nil
-        tapLocation = .zero
-        showConfirmButton = false
-        hasPenDrawnMasks = false
-    }
-    
-    private func cropCSVWithMask() {
-        guard let maskImage = maskImage else { return }
-        
-        cameraManager.cropDepthDataWithMask(maskImage, imageFrame: imageFrame, depthImageSize: depthImage.size, skipExpansion: hasPenDrawnMasks)
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            onPrimaryComplete(cameraManager.croppedFileToShare)
-        }
-    }
-}
-
-// MARK: - Refinement Overlay View (Secondary Phase)
-struct RefinementOverlayView: View {
-    let depthImage: UIImage
-    let photo: UIImage?
-    let cameraManager: CameraManager
-    let primaryCroppedCSV: URL?
-    let onRefinementComplete: () -> Void
-    let onSkip: () -> Void
-    let onDismiss: () -> Void
-    
-    @State private var imageFrame: CGRect = .zero
-    
-    // MobileSAM integration
-    @StateObject private var samManager = MobileSAMManager()
-    @State private var maskImage: UIImage?
-    @State private var maskHistory: [UIImage] = []
-    @State private var tapLocation: CGPoint = .zero
-    @State private var imageDisplaySize: CGSize = .zero
-    @State private var isImageEncoded = false
-    @State private var showConfirmButton = false
-    
-    // Pen drawing states
-    @State private var isPenMode = false
-    @State private var brushSize: CGFloat = 30
-    @State private var currentDrawingPath: [CGPoint] = []
-    @State private var isDrawing = false
-    @State private var hasPenDrawnMasks = false
-    
-    var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            
-            VStack {
-                // Header controls
-                HStack(spacing: 20) {
-                    Button(action: { onDismiss() }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.title2)
-                            .foregroundColor(.white)
-                    }
-                    
-                    Spacer()
-                    
-                    Text("Refine Contents")
-                        .foregroundColor(.yellow)
-                        .font(.headline)
-                    
-                    Spacer()
-                    
-                    // Skip button
-                    Button(action: { onSkip() }) {
-                        Image(systemName: "forward.circle.fill")
-                            .font(.title2)
-                            .foregroundColor(.gray)
-                    }
-                    
-                    // Pen mode toggle
-                    Button(action: { isPenMode.toggle() }) {
-                        Image(systemName: isPenMode ? "pencil.circle.fill" : "pencil.circle")
-                            .font(.title2)
-                            .foregroundColor(isPenMode ? .blue : .white)
-                    }
-                    
-                    // Undo button
-                    if !maskHistory.isEmpty {
-                        Button(action: { undoLastMask() }) {
-                            Image(systemName: "arrow.uturn.backward.circle.fill")
-                                .font(.title2)
-                                .foregroundColor(.orange)
-                        }
-                    }
-                    
-                    // Clear button
-                    if !maskHistory.isEmpty && !showConfirmButton {
-                        Button(action: { clearAllMasks() }) {
-                            Image(systemName: "trash.circle.fill")
-                                .font(.title2)
-                                .foregroundColor(.red)
-                        }
-                    }
-                    
-                    // Confirm button
-                    if showConfirmButton {
-                        Button(action: { applyRefinementMask() }) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(.title2)
-                                .foregroundColor(.green)
-                        }
-                    }
-                }
-                .padding(.horizontal)
-                .frame(height: 44)
-                
-                // Brush size slider (when pen mode is active)
-                if isPenMode {
-                    HStack {
-                        Image(systemName: "circle.fill")
-                            .font(.system(size: 8))
-                            .foregroundColor(.white)
-                        Slider(value: $brushSize, in: 10...100)
-                            .accentColor(.blue)
-                        Image(systemName: "circle.fill")
-                            .font(.system(size: 20))
-                            .foregroundColor(.white)
-                        Text("\(Int(brushSize))")
-                            .foregroundColor(.white)
-                            .frame(width: 35)
-                    }
-                    .padding(.horizontal, 50)
-                }
-                
-                Spacer()
-                
-                // Image overlay with proper coordinate space
-                GeometryReader { geometry in
-                    ZStack {
-                        // Cropped image
-                        Image(uiImage: depthImage)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .overlay(
-                                GeometryReader { imageGeometry in
-                                    Color.clear
-                                        .onAppear {
-                                            updateImageFrame(imageGeometry: imageGeometry)
-                                        }
-                                        .onChange(of: imageGeometry.size) { _, _ in
-                                            updateImageFrame(imageGeometry: imageGeometry)
-                                        }
-                                }
-                            )
-                        
-                        // MobileSAM mask overlay
-                        if let mask = maskImage {
-                            Image(uiImage: mask)
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                        }
-                        
-                        if isPenMode && !currentDrawingPath.isEmpty {
-                            PenDrawingOverlay(
-                                points: $currentDrawingPath,
-                                brushSize: brushSize,
-                                color: UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 0.7),
+                                color: isDrawingPrimary ?
+                                    UIColor(red: 0/255, green: 122/255, blue: 255/255, alpha: 0.7) :
+                                    UIColor(red: 255/255, green: 204/255, blue: 0/255, alpha: 0.7),
                                 imageFrame: imageFrame
                             )
                         }
@@ -703,44 +304,78 @@ struct RefinementOverlayView: View {
                     )
                     .onTapGesture { location in
                         if !isPenMode {
-                            handleRefinementTap(at: location)
+                            handleUnifiedTap(at: location)
                         }
                     }
                 }
-                .coordinateSpace(name: "refinementContainer")
+                .coordinateSpace(name: "imageContainer")
                 .padding()
                 
                 Spacer()
                 
                 // Info text
-                Text(getRefinementInstructionText())
+                Text(getInstructionText())
                     .foregroundColor(.white)
                     .font(.caption)
                     .multilineTextAlignment(.center)
                     .padding()
                     .frame(minHeight: 60, alignment: .top)
+                
+                // Error message for MobileSAM
+                if let errorMessage = samManagerDepth.errorMessage ?? samManagerPhoto.errorMessage {
+                    errorMessageView(errorMessage)
+                }
             }
         }
         .onAppear {
-            startRefinementSegmentation()
+            startUnifiedSegmentation()
+        }
+    }
+    
+    // MARK: - Helper Views
+    
+    private func errorMessageView(_ message: String) -> some View {
+        VStack {
+            Spacer()
+            
+            HStack {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundColor(.red)
+                
+                Text(message)
+                    .foregroundColor(.white)
+                    .font(.body)
+            }
+            .padding()
+            .background(Color.red.opacity(0.2))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.red, lineWidth: 1)
+            )
+            .cornerRadius(8)
+            .padding()
         }
     }
     
     // MARK: - Helper Functions
-    private func getRefinementInstructionText() -> String {
+    private func getInstructionText() -> String {
         if isPenMode {
-            return "Draw on the food contents to isolate. Tap ✓ to apply or skip to use full object."
-        } else if !isImageEncoded {
-            return "Encoding image for refinement..."
-        } else if maskImage == nil {
-            return "Tap the food contents you want to isolate, or skip to use the full primary object."
+            if isDrawingPrimary {
+                return "Draw on primary object (blue). Tap P/R to switch to refinement mode."
+            } else {
+                return "Draw on food contents (yellow). Tap P/R to switch to primary mode."
+            }
+        } else if !isDepthEncoded || !isPhotoEncoded {
+            return "Encoding images for AI segmentation..."
+        } else if primaryMaskImage == nil && refinementMaskImage == nil {
+            return "Tap to select: Blue = primary object, Yellow = food contents inside."
         } else {
-            return "Mask applied! Tap more areas to add, tap ✓ to apply or skip to use full object."
+            return "Blue = primary, Yellow = contents. Tap more to add, or tap ✓ when done."
         }
     }
     
     private func updateImageFrame(imageGeometry: GeometryProxy) {
-        let frame = imageGeometry.frame(in: .named("refinementContainer"))
+        let frame = imageGeometry.frame(in: .named("imageContainer"))
         imageFrame = frame
         imageDisplaySize = frame.size
     }
@@ -765,26 +400,40 @@ struct RefinementOverlayView: View {
         return points
     }
     
-    private func startRefinementSegmentation() {
-        maskImage = nil
-        maskHistory = []
+    // MARK: - Unified Segmentation Functions
+    private func startUnifiedSegmentation() {
+        primaryMaskImage = nil
+        refinementMaskImage = nil
+        primaryMaskHistory = []
+        refinementMaskHistory = []
+        primaryOriginalMasks = []
+        refinementOriginalMasks = []
         tapLocation = .zero
         showConfirmButton = false
-        isImageEncoded = false
+        isDepthEncoded = false
+        isPhotoEncoded = false
         hasPenDrawnMasks = false
         
-        let imageToSegment = photo ?? depthImage
+        let photoToSegment = photo ?? depthImage
         
         Task {
-            let success = await samManager.encodeImage(imageToSegment)
+            // Encode both images in parallel
+            async let depthEncodeTask = samManagerDepth.encodeImage(depthImage)
+            async let photoEncodeTask = samManagerPhoto.encodeImage(photoToSegment)
+            
+            let (depthSuccess, photoSuccess) = await (depthEncodeTask, photoEncodeTask)
+            
             await MainActor.run {
-                isImageEncoded = success
+                isDepthEncoded = depthSuccess
+                isPhotoEncoded = photoSuccess
             }
         }
     }
     
-    private func handleRefinementTap(at location: CGPoint) {
-        guard isImageEncoded && !samManager.isLoading && imageFrame.contains(location) else { return }
+    private func handleUnifiedTap(at location: CGPoint) {
+        guard isDepthEncoded && isPhotoEncoded &&
+              !samManagerDepth.isLoading && !samManagerPhoto.isLoading &&
+              imageFrame.contains(location) else { return }
         
         tapLocation = location
         
@@ -793,11 +442,38 @@ struct RefinementOverlayView: View {
         let relativeLocation = CGPoint(x: relativeX, y: relativeY)
         
         Task {
-            let mask = await samManager.generateMask(at: relativeLocation, in: imageDisplaySize)
+            // Generate masks from both images in parallel
+            async let depthMaskTask = samManagerDepth.generateMask(at: relativeLocation, in: imageDisplaySize)
+            async let photoMaskTask = samManagerPhoto.generateMask(at: relativeLocation, in: imageDisplaySize)
+            
+            let (depthMask, photoMask) = await (depthMaskTask, photoMaskTask)
+            
             await MainActor.run {
-                if let mask = mask {
-                    maskHistory.append(mask)
-                    self.maskImage = recompositeMaskHistory()
+                // Add primary mask (from depth) in blue
+                if let depthMask = depthMask {
+                    // Store original mask with brown color for processing
+                    let originalMask = colorMask(depthMask, with: UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 1.0))
+                    primaryOriginalMasks.append(originalMask)
+                    
+                    // Create colored version for display
+                    let coloredDepthMask = colorMask(depthMask, with: UIColor(red: 0/255, green: 122/255, blue: 255/255, alpha: 1.0))
+                    primaryMaskHistory.append(coloredDepthMask)
+                    self.primaryMaskImage = recompositeMaskHistory(primaryMaskHistory)
+                }
+                
+                // Add refinement mask (from photo) in yellow
+                if let photoMask = photoMask {
+                    // Store original mask with brown color for processing
+                    let originalMask = colorMask(photoMask, with: UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 1.0))
+                    refinementOriginalMasks.append(originalMask)
+                    
+                    // Create colored version for display
+                    let coloredPhotoMask = colorMask(photoMask, with: UIColor(red: 255/255, green: 204/255, blue: 0/255, alpha: 1.0))
+                    refinementMaskHistory.append(coloredPhotoMask)
+                    self.refinementMaskImage = recompositeMaskHistory(refinementMaskHistory)
+                }
+                
+                if depthMask != nil || photoMask != nil {
                     self.showConfirmButton = true
                 }
             }
@@ -811,18 +487,38 @@ struct RefinementOverlayView: View {
             return
         }
         
-        if let drawnMask = createMaskFromPath(currentDrawingPath, brushSize: brushSize, in: imageFrame, imageSize: depthImage.size) {
-            maskHistory.append(drawnMask)
-            maskImage = recompositeMaskHistory()
-            showConfirmButton = true
-            hasPenDrawnMasks = true
+        let targetImage = isDrawingPrimary ? depthImage : (photo ?? depthImage)
+        
+        // Create original mask with brown color for processing
+        let originalColor = UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 1.0)
+        if let originalMask = createMaskFromPath(currentDrawingPath, brushSize: brushSize, in: imageFrame, imageSize: targetImage.size, color: originalColor) {
+            
+            // Create display color mask
+            let displayColor = isDrawingPrimary ?
+                UIColor(red: 0/255, green: 122/255, blue: 255/255, alpha: 1.0) :
+                UIColor(red: 255/255, green: 204/255, blue: 0/255, alpha: 1.0)
+            
+            if let displayMask = createMaskFromPath(currentDrawingPath, brushSize: brushSize, in: imageFrame, imageSize: targetImage.size, color: displayColor) {
+                
+                if isDrawingPrimary {
+                    primaryOriginalMasks.append(originalMask)
+                    primaryMaskHistory.append(displayMask)
+                    primaryMaskImage = recompositeMaskHistory(primaryMaskHistory)
+                } else {
+                    refinementOriginalMasks.append(originalMask)
+                    refinementMaskHistory.append(displayMask)
+                    refinementMaskImage = recompositeMaskHistory(refinementMaskHistory)
+                }
+                showConfirmButton = true
+                hasPenDrawnMasks = true
+            }
         }
         
         currentDrawingPath = []
         isDrawing = false
     }
     
-    private func createMaskFromPath(_ path: [CGPoint], brushSize: CGFloat, in frame: CGRect, imageSize: CGSize) -> UIImage? {
+    private func createMaskFromPath(_ path: [CGPoint], brushSize: CGFloat, in frame: CGRect, imageSize: CGSize, color: UIColor) -> UIImage? {
         let size = imageSize
         
         UIGraphicsBeginImageContextWithOptions(size, false, 0.0)
@@ -832,7 +528,7 @@ struct RefinementOverlayView: View {
         
         context.setLineCap(.round)
         context.setLineJoin(.round)
-        context.setStrokeColor(UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 1.0).cgColor)
+        context.setStrokeColor(color.cgColor)
         
         let scaledBrushSize = brushSize * (size.width / frame.width)
         context.setLineWidth(scaledBrushSize)
@@ -863,41 +559,149 @@ struct RefinementOverlayView: View {
         )
     }
     
-    private func recompositeMaskHistory() -> UIImage? {
-        guard !maskHistory.isEmpty else { return nil }
-        var result = maskHistory[0]
-        for i in 1..<maskHistory.count {
-            result = compositeMasks(result, with: maskHistory[i])
+    private func colorMask(_ mask: UIImage, with color: UIColor) -> UIImage {
+        guard let cgImage = mask.cgImage else { return mask }
+        
+        let width = cgImage.width
+        let height = cgImage.height
+        
+        var maskData = [UInt8](repeating: 0, count: width * height * 4)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(
+            data: &maskData,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return mask }
+        
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        color.getRed(&r, green: &g, blue: &b, alpha: &a)
+        
+        for i in 0..<(width * height) {
+            let index = i * 4
+            if maskData[index] > 128 {
+                maskData[index] = UInt8(r * 255)
+                maskData[index + 1] = UInt8(g * 255)
+                maskData[index + 2] = UInt8(b * 255)
+                maskData[index + 3] = 255
+            }
+        }
+        
+        guard let coloredContext = CGContext(
+            data: &maskData,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let coloredCGImage = coloredContext.makeImage() else {
+            return mask
+        }
+        
+        return UIImage(cgImage: coloredCGImage, scale: mask.scale, orientation: mask.imageOrientation)
+    }
+    
+    private func recompositeMaskHistory(_ history: [UIImage]) -> UIImage? {
+        guard !history.isEmpty else { return nil }
+        var result = history[0]
+        for i in 1..<history.count {
+            result = compositeMasks(result, with: history[i])
         }
         return result
     }
     
     private func undoLastMask() {
-        guard !maskHistory.isEmpty else { return }
-        maskHistory.removeLast()
-        maskImage = recompositeMaskHistory()
-        if maskHistory.isEmpty {
+        // Prioritize undoing refinement masks first, then primary
+        if !refinementMaskHistory.isEmpty {
+            refinementMaskHistory.removeLast()
+            refinementOriginalMasks.removeLast()
+            refinementMaskImage = recompositeMaskHistory(refinementMaskHistory)
+        } else if !primaryMaskHistory.isEmpty {
+            primaryMaskHistory.removeLast()
+            primaryOriginalMasks.removeLast()
+            primaryMaskImage = recompositeMaskHistory(primaryMaskHistory)
+        }
+        
+        if primaryMaskHistory.isEmpty && refinementMaskHistory.isEmpty {
             showConfirmButton = false
             tapLocation = .zero
         }
     }
     
     private func clearAllMasks() {
-        maskHistory = []
-        maskImage = nil
+        primaryMaskHistory = []
+        refinementMaskHistory = []
+        primaryOriginalMasks = []
+        refinementOriginalMasks = []
+        primaryMaskImage = nil
+        refinementMaskImage = nil
         tapLocation = .zero
         showConfirmButton = false
         hasPenDrawnMasks = false
     }
     
-    private func applyRefinementMask() {
-        guard let maskImage = maskImage,
-              let primaryCSV = primaryCroppedCSV else { return }
+    private func applyMasks() {
+        // Use original brown-colored masks for processing
+        let compositedPrimaryMask = recompositeMaskHistory(primaryOriginalMasks)
+        let compositedRefinementMask = recompositeMaskHistory(refinementOriginalMasks)
         
-        cameraManager.refineWithSecondaryMask(maskImage, imageFrame: imageFrame, depthImageSize: depthImage.size, primaryCroppedCSV: primaryCSV, skipExpansion: hasPenDrawnMasks)
+        print("🔍 Unified Mask Application:")
+        print("   Primary mask exists: \(compositedPrimaryMask != nil)")
+        print("   Refinement mask exists: \(compositedRefinementMask != nil)")
         
-        DispatchQueue.main.asyncAfter(deadline: .now()) {
-            onRefinementComplete()
+        // First apply primary mask to get cropped CSV
+        if let primaryMask = compositedPrimaryMask {
+            print("📦 Applying primary mask...")
+            cameraManager.cropDepthDataWithMask(primaryMask, imageFrame: imageFrame, depthImageSize: depthImage.size, skipExpansion: hasPenDrawnMasks)
+            
+            // Wait for primary cropping to complete and CSV to be written
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                if let primaryCSV = self.cameraManager.croppedFileToShare {
+                    print("✅ Primary CSV created: \(primaryCSV.lastPathComponent)")
+                    
+                    // Then apply refinement mask if it exists
+                    if let refinementMask = compositedRefinementMask {
+                        print("🎯 Applying refinement mask to primary CSV...")
+                        self.cameraManager.refineWithSecondaryMask(
+                            refinementMask,
+                            imageFrame: self.imageFrame,
+                            depthImageSize: self.depthImage.size,
+                            primaryCroppedCSV: primaryCSV,
+                            skipExpansion: self.hasPenDrawnMasks
+                        )
+                        
+                        // Wait for refinement to complete
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                            print("✅ Refinement complete")
+                            self.onComplete(self.cameraManager.croppedFileToShare)
+                        }
+                    } else {
+                        // No refinement mask, just complete with primary
+                        print("ℹ️ No refinement mask - completing with primary only")
+                        self.onComplete(self.cameraManager.croppedFileToShare)
+                    }
+                } else {
+                    print("❌ ERROR: Primary CSV not created!")
+                    // Fallback - complete anyway
+                    self.onComplete(self.cameraManager.croppedFileToShare)
+                }
+            }
+        } else if let refinementMask = compositedRefinementMask {
+            // Only refinement mask exists (unlikely but handle it)
+            print("⚠️ Only refinement mask exists - treating as primary")
+            cameraManager.cropDepthDataWithMask(refinementMask, imageFrame: imageFrame, depthImageSize: depthImage.size, skipExpansion: hasPenDrawnMasks)
+            
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                self.onComplete(self.cameraManager.croppedFileToShare)
+            }
+        } else {
+            print("❌ ERROR: No masks to apply!")
         }
     }
 }
@@ -1268,7 +1072,7 @@ struct BackgroundSelectionOverlayView: View {
         let width = Int(targetSize.width)
         let height = Int(targetSize.height)
         
-        print("📏 Intersecting masks at target size: \(width)x\(height)")
+        print("🔍 Intersecting masks at target size: \(width)x\(height)")
         print("   Original mask1 size: \(mask1.size)")
         print("   Original mask2 size: \(mask2.size)")
         
