@@ -902,7 +902,7 @@ struct RefinementOverlayView: View {
     }
 }
 
-// MARK: - Background Selection Overlay View (NEW)
+// MARK: - Background Selection Overlay View (UPDATED FOR DUAL-MASK INTERSECTION)
 struct BackgroundSelectionOverlayView: View {
     let depthImage: UIImage
     let photo: UIImage?
@@ -913,13 +913,15 @@ struct BackgroundSelectionOverlayView: View {
     
     @State private var imageFrame: CGRect = .zero
     
-    // MobileSAM integration - but applied to depth image
-    @StateObject private var samManager = MobileSAMManager()
+    // Dual MobileSAM integration - one for photo, one for depth
+    @StateObject private var samManagerPhoto = MobileSAMManager()
+    @StateObject private var samManagerDepth = MobileSAMManager()
     @State private var maskImage: UIImage?
     @State private var maskHistory: [UIImage] = []
     @State private var tapLocation: CGPoint = .zero
     @State private var imageDisplaySize: CGSize = .zero
-    @State private var isImageEncoded = false
+    @State private var isPhotoEncoded = false
+    @State private var isDepthEncoded = false
     @State private var showConfirmButton = false
     
     // Pen drawing states
@@ -1050,7 +1052,7 @@ struct BackgroundSelectionOverlayView: View {
                                 )
                         }
                         
-                        // MobileSAM mask overlay (generated from depth but displayed on photo)
+                        // MobileSAM mask overlay (intersection of photo and depth masks)
                         if let mask = maskImage {
                             Image(uiImage: mask)
                                 .resizable()
@@ -1144,10 +1146,10 @@ struct BackgroundSelectionOverlayView: View {
     private func getBackgroundInstructionText() -> String {
         if isPenMode {
             return "Draw on the background surface. Tap ✓ to apply or skip to use automatic plane."
-        } else if !isImageEncoded {
-            return "Encoding depth image for background selection..."
+        } else if !isPhotoEncoded || !isDepthEncoded {
+            return "Encoding images for precise background selection..."
         } else if maskImage == nil {
-            return "Tap the background surface (table, plate, etc), or skip to use automatic plane detection."
+            return "Tap the background surface. AI will match visual + depth for accuracy."
         } else {
             return "Background mask applied! Tap more areas to add, tap ✓ to apply or skip."
         }
@@ -1179,25 +1181,42 @@ struct BackgroundSelectionOverlayView: View {
         return points
     }
     
+    // UPDATED: Encode both photo AND depth images
     private func startBackgroundSegmentation() {
         maskImage = nil
         maskHistory = []
         tapLocation = .zero
         showConfirmButton = false
-        isImageEncoded = false
+        isPhotoEncoded = false
+        isDepthEncoded = false
         
-        // Encode the PHOTO image (not the depth) for segmentation
-        let imageToSegment = photo ?? depthImage
+        let photoToSegment = photo ?? depthImage
+        
         Task {
-            let success = await samManager.encodeImage(imageToSegment)
+            // Encode both images in parallel
+            async let photoEncodeTask = samManagerPhoto.encodeImage(photoToSegment)
+            async let depthEncodeTask = samManagerDepth.encodeImage(depthImage)
+            
+            let (photoSuccess, depthSuccess) = await (photoEncodeTask, depthEncodeTask)
+            
             await MainActor.run {
-                isImageEncoded = success
+                isPhotoEncoded = photoSuccess
+                isDepthEncoded = depthSuccess
+                
+                if photoSuccess && depthSuccess {
+                    print("✅ Both photo and depth images encoded for background selection")
+                } else {
+                    print("⚠️ Encoding status - Photo: \(photoSuccess), Depth: \(depthSuccess)")
+                }
             }
         }
     }
     
+    // UPDATED: Generate masks from BOTH images and intersect them
     private func handleBackgroundTap(at location: CGPoint) {
-        guard isImageEncoded && !samManager.isLoading && imageFrame.contains(location) else { return }
+        guard isPhotoEncoded && isDepthEncoded &&
+              !samManagerPhoto.isLoading && !samManagerDepth.isLoading &&
+              imageFrame.contains(location) else { return }
         
         tapLocation = location
         
@@ -1206,21 +1225,182 @@ struct BackgroundSelectionOverlayView: View {
         let relativeLocation = CGPoint(x: relativeX, y: relativeY)
         
         Task {
-            // Generate mask from depth image
-            let mask = await samManager.generateMask(at: relativeLocation, in: imageDisplaySize)
+            print("🎯 Generating masks from both visual and depth images...")
+            
+            // Generate masks from both images in parallel
+            async let photoMaskTask = samManagerPhoto.generateMask(at: relativeLocation, in: imageDisplaySize)
+            async let depthMaskTask = samManagerDepth.generateMask(at: relativeLocation, in: imageDisplaySize)
+            
+            let (photoMask, depthMask) = await (photoMaskTask, depthMaskTask)
+            
             await MainActor.run {
-                if let mask = mask {
-                    // ⭐ NEW: Filter out top and bottom 5%
-                    let filteredMask = filterTopAndBottom5Percent(mask)
-                    maskHistory.append(filteredMask)
-                    self.maskImage = recompositeMaskHistory()
-                    self.showConfirmButton = true
+                if let photoMask = photoMask, let depthMask = depthMask {
+                    // Intersect the two masks to get only common pixels
+                    // Use depth image dimensions (smaller) to avoid memory issues
+                    let targetSize = depthImage.size
+                    
+                    if let intersectedMask = intersectMasks(photoMask, depthMask, targetSize: targetSize) {
+                        print("✅ Successfully intersected photo and depth masks")
+                        let filteredMask = filterTopAndBottom5Percent(intersectedMask)
+                        maskHistory.append(filteredMask)
+                        self.maskImage = recompositeMaskHistory()
+                        self.showConfirmButton = true
+                    } else {
+                        print("❌ Failed to intersect masks")
+                    }
+                } else {
+                    print("⚠️ One or both masks failed to generate - Photo: \(photoMask != nil), Depth: \(depthMask != nil)")
+                    // Fallback to photo mask only if depth mask failed
+                    if let photoMask = photoMask {
+                        let filteredMask = filterTopAndBottom5Percent(photoMask)
+                        maskHistory.append(filteredMask)
+                        self.maskImage = recompositeMaskHistory()
+                        self.showConfirmButton = true
+                    }
                 }
             }
         }
     }
 
-    // ⭐ NEW: Simple function to zero out top and bottom 5% of mask
+    // UPDATED: Intersect two masks at a target size to avoid memory issues
+    private func intersectMasks(_ mask1: UIImage, _ mask2: UIImage, targetSize: CGSize) -> UIImage? {
+        // Use the depth image size as target (smaller dimension to avoid memory issues)
+        let width = Int(targetSize.width)
+        let height = Int(targetSize.height)
+        
+        print("📏 Intersecting masks at target size: \(width)x\(height)")
+        print("   Original mask1 size: \(mask1.size)")
+        print("   Original mask2 size: \(mask2.size)")
+        
+        // Resize both masks to target size efficiently
+        guard let resizedMask1 = resizeMaskEfficiently(mask1, to: CGSize(width: width, height: height)),
+              let resizedMask2 = resizeMaskEfficiently(mask2, to: CGSize(width: width, height: height)) else {
+            print("❌ Failed to resize masks")
+            return nil
+        }
+        
+        guard let cgImage1 = resizedMask1.cgImage,
+              let cgImage2 = resizedMask2.cgImage else {
+            print("❌ Failed to get CGImages from resized masks")
+            return nil
+        }
+        
+        // Extract pixel data from both masks
+        var data1 = [UInt8](repeating: 0, count: width * height * 4)
+        var data2 = [UInt8](repeating: 0, count: width * height * 4)
+        
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        
+        guard let context1 = CGContext(
+            data: &data1,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let context2 = CGContext(
+            data: &data2,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            print("❌ Failed to create contexts")
+            return nil
+        }
+        
+        context1.draw(cgImage1, in: CGRect(x: 0, y: 0, width: width, height: height))
+        context2.draw(cgImage2, in: CGRect(x: 0, y: 0, width: width, height: height))
+        
+        // Create intersected mask data
+        var intersectedData = [UInt8](repeating: 0, count: width * height * 4)
+        var intersectionCount = 0
+        var mask1Count = 0
+        var mask2Count = 0
+        
+        for i in 0..<(width * height) {
+            let index = i * 4
+            // A pixel is included in the intersection only if it's in both masks (threshold > 128)
+            let inMask1 = data1[index] > 128
+            let inMask2 = data2[index] > 128
+            
+            if inMask1 { mask1Count += 1 }
+            if inMask2 { mask2Count += 1 }
+            
+            if inMask1 && inMask2 {
+                // Keep the mask color
+                intersectedData[index] = 139     // R
+                intersectedData[index + 1] = 69  // G
+                intersectedData[index + 2] = 19  // B
+                intersectedData[index + 3] = 255 // A
+                intersectionCount += 1
+            }
+            // else remains black (0,0,0,0)
+        }
+        
+        print("📊 Mask intersection stats:")
+        print("   Photo mask pixels: \(mask1Count)")
+        print("   Depth mask pixels: \(mask2Count)")
+        print("   Intersected pixels: \(intersectionCount)")
+        if mask1Count > 0 && mask2Count > 0 {
+            print("   Intersection ratio: \(String(format: "%.1f", Double(intersectionCount) / Double(max(mask1Count, mask2Count)) * 100))%")
+        }
+        
+        // Create CGImage from intersected data
+        guard let intersectedContext = CGContext(
+            data: &intersectedData,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let intersectedCGImage = intersectedContext.makeImage() else {
+            print("❌ Failed to create intersected CGImage")
+            return nil
+        }
+        
+        return UIImage(cgImage: intersectedCGImage, scale: resizedMask1.scale, orientation: resizedMask1.imageOrientation)
+    }
+
+    // NEW: Efficiently resize a mask image using CoreGraphics
+    private func resizeMaskEfficiently(_ image: UIImage, to targetSize: CGSize) -> UIImage? {
+        let width = Int(targetSize.width)
+        let height = Int(targetSize.height)
+        
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
+        
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo.rawValue
+        ) else {
+            return nil
+        }
+        
+        // Use high quality interpolation for masks
+        context.interpolationQuality = .high
+        
+        // Draw the image scaled to the target size
+        if let cgImage = image.cgImage {
+            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        }
+        
+        guard let scaledCGImage = context.makeImage() else {
+            return nil
+        }
+        
+        return UIImage(cgImage: scaledCGImage, scale: 1.0, orientation: image.imageOrientation)
+    }
+
     private func filterTopAndBottom5Percent(_ mask: UIImage) -> UIImage {
         guard let cgImage = mask.cgImage else { return mask }
         
@@ -1280,7 +1460,6 @@ struct BackgroundSelectionOverlayView: View {
             return
         }
         
-        // ⭐ FIX: Use same image size as MobileSAM (photo if available, otherwise depth)
         let imageToUse = photo ?? depthImage
         
         if let drawnMask = createMaskFromPath(currentDrawingPath, brushSize: brushSize, in: imageFrame, imageSize: imageToUse.size) {
@@ -1363,7 +1542,7 @@ struct BackgroundSelectionOverlayView: View {
     private func selectBackgroundSurface() {
         guard let maskImage = maskImage else { return }
         
-        // Extract background surface points from depth data using the mask
+        // Extract background surface points from depth data using the intersected mask
         cameraManager.extractBackgroundSurfacePoints(maskImage, imageFrame: imageFrame, depthImageSize: depthImage.size)
         
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
