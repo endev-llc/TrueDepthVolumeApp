@@ -112,6 +112,12 @@ struct UnifiedSegmentOverlayView: View {
     @State private var hasPenDrawnMasks = false
     @State private var isDrawingPrimary = true // Toggle between primary and refinement pen drawing
     
+    // Box drawing states
+    @State private var isBoxMode = false
+    @State private var boxStartPoint: CGPoint?
+    @State private var boxCurrentPoint: CGPoint?
+    @State private var isDrawingBox = false
+    
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
@@ -133,9 +139,24 @@ struct UnifiedSegmentOverlayView: View {
                     
                     Spacer()
                     
+                    // Box mode toggle
+                    Button(action: {
+                        isBoxMode.toggle()
+                        if isBoxMode {
+                            isPenMode = false  // Disable pen mode when box mode is on
+                        }
+                    }) {
+                        Image(systemName: isBoxMode ? "rectangle.dashed" : "rectangle")
+                            .font(.title2)
+                            .foregroundColor(isBoxMode ? .green : .white)
+                    }
+                    
                     // Pen mode toggle with color indicator
                     Button(action: {
                         isPenMode.toggle()
+                        if isPenMode {
+                            isBoxMode = false  // Disable box mode when pen mode is on
+                        }
                     }) {
                         Image(systemName: isPenMode ? "pencil.circle.fill" : "pencil.circle")
                             .font(.title2)
@@ -202,7 +223,7 @@ struct UnifiedSegmentOverlayView: View {
                 }
                 
                 // Opacity slider (only show if photo exists and not in pen mode)
-                if photo != nil && !isPenMode {
+                if photo != nil && !isPenMode && !isBoxMode {
                     HStack {
                         Image(systemName: "photo")
                             .foregroundColor(.white)
@@ -269,8 +290,17 @@ struct UnifiedSegmentOverlayView: View {
                             )
                         }
                         
+                        // Box drawing overlay
+                        if isBoxMode && boxStartPoint != nil && boxCurrentPoint != nil {
+                            BoxDrawingOverlay(
+                                startPoint: boxStartPoint!,
+                                currentPoint: boxCurrentPoint!,
+                                imageFrame: imageFrame
+                            )
+                        }
+                        
                         // Tap indicator
-                        if tapLocation != .zero && !isPenMode {
+                        if tapLocation != .zero && !isPenMode && !isBoxMode {
                             Circle()
                                 .fill(Color.red)
                                 .frame(width: 12, height: 12)
@@ -283,7 +313,15 @@ struct UnifiedSegmentOverlayView: View {
                     .simultaneousGesture(
                         DragGesture(minimumDistance: 0)
                             .onChanged { value in
-                                if isPenMode && imageFrame.contains(value.location) {
+                                if isBoxMode && imageFrame.contains(value.startLocation) {
+                                    if !isDrawingBox {
+                                        isDrawingBox = true
+                                        boxStartPoint = value.startLocation
+                                        boxCurrentPoint = value.location
+                                    } else {
+                                        boxCurrentPoint = value.location
+                                    }
+                                } else if isPenMode && imageFrame.contains(value.location) {
                                     if !isDrawing {
                                         isDrawing = true
                                         currentDrawingPath = [value.location]
@@ -297,13 +335,15 @@ struct UnifiedSegmentOverlayView: View {
                                 }
                             }
                             .onEnded { _ in
-                                if isPenMode && isDrawing {
+                                if isBoxMode && isDrawingBox {
+                                    finishBoxDrawing()
+                                } else if isPenMode && isDrawing {
                                     finishDrawing()
                                 }
                             }
                     )
                     .onTapGesture { location in
-                        if !isPenMode {
+                        if !isPenMode && !isBoxMode {
                             handleUnifiedTap(at: location)
                         }
                     }
@@ -359,7 +399,9 @@ struct UnifiedSegmentOverlayView: View {
     
     // MARK: - Helper Functions
     private func getInstructionText() -> String {
-        if isPenMode {
+        if isBoxMode {
+            return "Drag diagonally to draw a box around the object."
+        } else if isPenMode {
             if isDrawingPrimary {
                 return "Draw on primary object (blue). Tap P/R to switch to refinement mode."
             } else {
@@ -516,6 +558,68 @@ struct UnifiedSegmentOverlayView: View {
         
         currentDrawingPath = []
         isDrawing = false
+    }
+    
+    // MARK: - Box Drawing Functions
+    private func finishBoxDrawing() {
+        guard let start = boxStartPoint, let end = boxCurrentPoint,
+              imageFrame.contains(start) && imageFrame.contains(end) else {
+            boxStartPoint = nil
+            boxCurrentPoint = nil
+            isDrawingBox = false
+            return
+        }
+        
+        // Create box rect from start and end points
+        let minX = min(start.x, end.x) - imageFrame.minX
+        let minY = min(start.y, end.y) - imageFrame.minY
+        let maxX = max(start.x, end.x) - imageFrame.minX
+        let maxY = max(start.y, end.y) - imageFrame.minY
+        
+        let boxRect = CGRect(
+            x: minX,
+            y: minY,
+            width: maxX - minX,
+            height: maxY - minY
+        )
+        
+        Task {
+            // Generate masks from both images using box prompt
+            async let depthMaskTask = samManagerDepth.generateMask(withBox: boxRect, in: imageDisplaySize)
+            async let photoMaskTask = samManagerPhoto.generateMask(withBox: boxRect, in: imageDisplaySize)
+            
+            let (depthMask, photoMask) = await (depthMaskTask, photoMaskTask)
+            
+            await MainActor.run {
+                // Add primary mask (from depth) in blue
+                if let depthMask = depthMask {
+                    let originalMask = colorMask(depthMask, with: UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 1.0))
+                    primaryOriginalMasks.append(originalMask)
+                    
+                    let coloredDepthMask = colorMask(depthMask, with: UIColor(red: 0/255, green: 122/255, blue: 255/255, alpha: 1.0))
+                    primaryMaskHistory.append(coloredDepthMask)
+                    self.primaryMaskImage = recompositeMaskHistory(primaryMaskHistory)
+                }
+                
+                // Add refinement mask (from photo) in yellow
+                if let photoMask = photoMask {
+                    let originalMask = colorMask(photoMask, with: UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 1.0))
+                    refinementOriginalMasks.append(originalMask)
+                    
+                    let coloredPhotoMask = colorMask(photoMask, with: UIColor(red: 255/255, green: 204/255, blue: 0/255, alpha: 1.0))
+                    refinementMaskHistory.append(coloredPhotoMask)
+                    self.refinementMaskImage = recompositeMaskHistory(refinementMaskHistory)
+                }
+                
+                if depthMask != nil || photoMask != nil {
+                    self.showConfirmButton = true
+                }
+                
+                boxStartPoint = nil
+                boxCurrentPoint = nil
+                isDrawingBox = false
+            }
+        }
     }
     
     private func createMaskFromPath(_ path: [CGPoint], brushSize: CGFloat, in frame: CGRect, imageSize: CGSize, color: UIColor) -> UIImage? {
@@ -734,6 +838,12 @@ struct BackgroundSelectionOverlayView: View {
     @State private var currentDrawingPath: [CGPoint] = []
     @State private var isDrawing = false
     
+    // Box drawing states
+    @State private var isBoxMode = false
+    @State private var boxStartPoint: CGPoint?
+    @State private var boxCurrentPoint: CGPoint?
+    @State private var isDrawingBox = false
+    
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
@@ -762,8 +872,25 @@ struct BackgroundSelectionOverlayView: View {
                             .foregroundColor(.gray)
                     }
                     
+                    // Box mode toggle
+                    Button(action: {
+                        isBoxMode.toggle()
+                        if isBoxMode {
+                            isPenMode = false
+                        }
+                    }) {
+                        Image(systemName: isBoxMode ? "rectangle.dashed" : "rectangle")
+                            .font(.title2)
+                            .foregroundColor(isBoxMode ? .green : .white)
+                    }
+                    
                     // Pen mode toggle
-                    Button(action: { isPenMode.toggle() }) {
+                    Button(action: {
+                        isPenMode.toggle()
+                        if isPenMode {
+                            isBoxMode = false
+                        }
+                    }) {
                         Image(systemName: isPenMode ? "pencil.circle.fill" : "pencil.circle")
                             .font(.title2)
                             .foregroundColor(isPenMode ? .blue : .white)
@@ -872,8 +999,17 @@ struct BackgroundSelectionOverlayView: View {
                             )
                         }
                         
+                        // Box drawing overlay
+                        if isBoxMode && boxStartPoint != nil && boxCurrentPoint != nil {
+                            BoxDrawingOverlay(
+                                startPoint: boxStartPoint!,
+                                currentPoint: boxCurrentPoint!,
+                                imageFrame: imageFrame
+                            )
+                        }
+                        
                         // Tap indicator
-                        if tapLocation != .zero && !isPenMode {
+                        if tapLocation != .zero && !isPenMode && !isBoxMode {
                             Circle()
                                 .fill(Color.red)
                                 .frame(width: 12, height: 12)
@@ -902,7 +1038,15 @@ struct BackgroundSelectionOverlayView: View {
                     .simultaneousGesture(
                         DragGesture(minimumDistance: 0)
                             .onChanged { value in
-                                if isPenMode && imageFrame.contains(value.location) {
+                                if isBoxMode && imageFrame.contains(value.startLocation) {
+                                    if !isDrawingBox {
+                                        isDrawingBox = true
+                                        boxStartPoint = value.startLocation
+                                        boxCurrentPoint = value.location
+                                    } else {
+                                        boxCurrentPoint = value.location
+                                    }
+                                } else if isPenMode && imageFrame.contains(value.location) {
                                     if !isDrawing {
                                         isDrawing = true
                                         currentDrawingPath = [value.location]
@@ -916,13 +1060,15 @@ struct BackgroundSelectionOverlayView: View {
                                 }
                             }
                             .onEnded { _ in
-                                if isPenMode && isDrawing {
+                                if isBoxMode && isDrawingBox {
+                                    finishBoxDrawing()
+                                } else if isPenMode && isDrawing {
                                     finishDrawing()
                                 }
                             }
                     )
                     .onTapGesture { location in
-                        if !isPenMode {
+                        if !isPenMode && !isBoxMode {
                             handleBackgroundTap(at: location)
                         }
                     }
@@ -948,7 +1094,9 @@ struct BackgroundSelectionOverlayView: View {
     
     // MARK: - Helper Functions
     private func getBackgroundInstructionText() -> String {
-        if isPenMode {
+        if isBoxMode {
+            return "Drag diagonally to draw a box around the background. Tap ✓ to apply or skip."
+        } else if isPenMode {
             return "Draw on the background surface. Tap ✓ to apply or skip to use automatic plane."
         } else if !isPhotoEncoded || !isDepthEncoded {
             return "Encoding images for precise background selection..."
@@ -1072,7 +1220,7 @@ struct BackgroundSelectionOverlayView: View {
         let width = Int(targetSize.width)
         let height = Int(targetSize.height)
         
-        print("🔍 Intersecting masks at target size: \(width)x\(height)")
+        print("📏 Intersecting masks at target size: \(width)x\(height)")
         print("   Original mask1 size: \(mask1.size)")
         print("   Original mask2 size: \(mask2.size)")
         
@@ -1276,6 +1424,70 @@ struct BackgroundSelectionOverlayView: View {
         isDrawing = false
     }
     
+    // MARK: - Box Drawing Functions
+    private func finishBoxDrawing() {
+        guard let start = boxStartPoint, let end = boxCurrentPoint,
+              imageFrame.contains(start) && imageFrame.contains(end) else {
+            boxStartPoint = nil
+            boxCurrentPoint = nil
+            isDrawingBox = false
+            return
+        }
+        
+        // Create box rect from start and end points
+        let minX = min(start.x, end.x) - imageFrame.minX
+        let minY = min(start.y, end.y) - imageFrame.minY
+        let maxX = max(start.x, end.x) - imageFrame.minX
+        let maxY = max(start.y, end.y) - imageFrame.minY
+        
+        let boxRect = CGRect(
+            x: minX,
+            y: minY,
+            width: maxX - minX,
+            height: maxY - minY
+        )
+        
+        Task {
+            print("🎯 Generating background masks from box prompt...")
+            
+            // Generate masks from both images using box prompt
+            async let photoMaskTask = samManagerPhoto.generateMask(withBox: boxRect, in: imageDisplaySize)
+            async let depthMaskTask = samManagerDepth.generateMask(withBox: boxRect, in: imageDisplaySize)
+            
+            let (photoMask, depthMask) = await (photoMaskTask, depthMaskTask)
+            
+            await MainActor.run {
+                if let photoMask = photoMask, let depthMask = depthMask {
+                    // Intersect the two masks
+                    let targetSize = depthImage.size
+                    
+                    if let intersectedMask = intersectMasks(photoMask, depthMask, targetSize: targetSize) {
+                        print("✅ Successfully intersected photo and depth masks from box")
+                        let filteredMask = filterTopAndBottom5Percent(intersectedMask)
+                        maskHistory.append(filteredMask)
+                        self.maskImage = recompositeMaskHistory()
+                        self.showConfirmButton = true
+                    } else {
+                        print("❌ Failed to intersect masks from box")
+                    }
+                } else {
+                    print("⚠️ One or both masks failed to generate from box - Photo: \(photoMask != nil), Depth: \(depthMask != nil)")
+                    // Fallback to photo mask only if depth mask failed
+                    if let photoMask = photoMask {
+                        let filteredMask = filterTopAndBottom5Percent(photoMask)
+                        maskHistory.append(filteredMask)
+                        self.maskImage = recompositeMaskHistory()
+                        self.showConfirmButton = true
+                    }
+                }
+                
+                boxStartPoint = nil
+                boxCurrentPoint = nil
+                isDrawingBox = false
+            }
+        }
+    }
+    
     private func createMaskFromPath(_ path: [CGPoint], brushSize: CGFloat, in frame: CGRect, imageSize: CGSize) -> UIImage? {
         let size = imageSize
         
@@ -1402,5 +1614,24 @@ class PenDrawingCanvasView: UIView {
             
             context.strokePath()
         }
+    }
+}
+
+// MARK: - Box Drawing Overlay
+struct BoxDrawingOverlay: View {
+    let startPoint: CGPoint
+    let currentPoint: CGPoint
+    let imageFrame: CGRect
+    
+    var body: some View {
+        let minX = min(startPoint.x, currentPoint.x)
+        let minY = min(startPoint.y, currentPoint.y)
+        let maxX = max(startPoint.x, currentPoint.x)
+        let maxY = max(startPoint.y, currentPoint.y)
+        
+        Rectangle()
+            .stroke(Color.green, lineWidth: 3)
+            .frame(width: maxX - minX, height: maxY - minY)
+            .position(x: (minX + maxX) / 2, y: (minY + maxY) / 2)
     }
 }

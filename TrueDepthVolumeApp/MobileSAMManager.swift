@@ -180,6 +180,108 @@ class MobileSAMManager: ObservableObject {
         return nil
     }
     
+    // MARK: - Box-based Mask Generation
+    func generateMask(withBox box: CGRect, in imageDisplaySize: CGSize) async -> UIImage? {
+        let startTime = CFAbsoluteTimeGetCurrent()
+        
+        guard let decoderSession = decoderSession,
+              let imageEmbeddings = currentImageEmbeddings else {
+            await MainActor.run {
+                errorMessage = "Models not ready or image not encoded"
+            }
+            return nil
+        }
+        
+        await MainActor.run {
+            isLoading = true
+        }
+        
+        do {
+            // Convert box corners to model coordinates
+            let coordStart = CFAbsoluteTimeGetCurrent()
+            let topLeft = convertUICoordinateToModelCoordinate(
+                CGPoint(x: box.minX, y: box.minY),
+                displaySize: imageDisplaySize
+            )
+            let bottomRight = convertUICoordinateToModelCoordinate(
+                CGPoint(x: box.maxX, y: box.maxY),
+                displaySize: imageDisplaySize
+            )
+            let coordTime = CFAbsoluteTimeGetCurrent() - coordStart
+            print("⏱️ Box coordinate conversion took: \(String(format: "%.3f", coordTime))s")
+            
+            // Create prompt tensors for box
+            let tensorStart = CFAbsoluteTimeGetCurrent()
+            let boxCoords = try createBoxCoordsTensor(
+                x1: topLeft.x, y1: topLeft.y,
+                x2: bottomRight.x, y2: bottomRight.y
+            )
+            let boxLabels = try createBoxLabelsTensor()
+            let maskInput = try createMaskInputTensor()
+            let hasMaskInput = try createHasMaskInputTensor()
+            let origImSize = try createOrigImageSizeTensor()
+            let tensorTime = CFAbsoluteTimeGetCurrent() - tensorStart
+            print("⏱️ Box tensor creation took: \(String(format: "%.3f", tensorTime))s")
+            
+            // Prepare inputs with box instead of point
+            let inputs: [String: ORTValue] = [
+                "image_embeddings": imageEmbeddings,
+                "point_coords": boxCoords,
+                "point_labels": boxLabels,
+                "mask_input": maskInput,
+                "has_mask_input": hasMaskInput,
+                "orig_im_size": origImSize
+            ]
+            
+            // Run inference
+            let inferenceStart = CFAbsoluteTimeGetCurrent()
+            let outputs = try decoderSession.run(withInputs: inputs, outputNames: ["masks", "iou_predictions", "low_res_masks"], runOptions: nil)
+            let inferenceTime = CFAbsoluteTimeGetCurrent() - inferenceStart
+            print("⏱️ Decoder inference (box) took: \(String(format: "%.3f", inferenceTime))s")
+            
+            await MainActor.run {
+                isLoading = false
+            }
+            
+            // Convert mask to UIImage
+            if let masks = outputs["masks"] {
+                let maskImageStart = CFAbsoluteTimeGetCurrent()
+                let result = try createMaskImage(from: masks)
+                let maskImageTime = CFAbsoluteTimeGetCurrent() - maskImageStart
+                print("⏱️ Mask image creation took: \(String(format: "%.3f", maskImageTime))s")
+                
+                let totalTime = CFAbsoluteTimeGetCurrent() - startTime
+                print("⏱️ TOTAL generateMask (box) took: \(String(format: "%.3f", totalTime))s")
+                
+                return result
+            }
+            
+        } catch {
+            await MainActor.run {
+                errorMessage = "Box mask generation failed: \(error.localizedDescription)"
+                isLoading = false
+            }
+        }
+        
+        return nil
+    }
+
+    private func createBoxCoordsTensor(x1: CGFloat, y1: CGFloat, x2: CGFloat, y2: CGFloat) throws -> ORTValue {
+        // Box format: [x1, y1, x2, y2] for top-left and bottom-right corners
+        var coords: [Float32] = [Float32(x1), Float32(y1), Float32(x2), Float32(y2)]
+        let shape: [NSNumber] = [1, 2, 2]  // [batch, 2 points (corners), 2 coords]
+        let tensorData = NSMutableData(bytes: &coords, length: coords.count * MemoryLayout<Float32>.size)
+        return try ORTValue(tensorData: tensorData, elementType: .float, shape: shape)
+    }
+
+    private func createBoxLabelsTensor() throws -> ORTValue {
+        // Labels: 2 for top-left corner, 3 for bottom-right corner (box format)
+        var labels: [Float32] = [2.0, 3.0]
+        let shape: [NSNumber] = [1, 2]  // [batch, 2 points]
+        let tensorData = NSMutableData(bytes: &labels, length: labels.count * MemoryLayout<Float32>.size)
+        return try ORTValue(tensorData: tensorData, elementType: .float, shape: shape)
+    }
+    
     // MARK: - Image Preprocessing
     private func preprocessImage(_ image: UIImage) -> UIImage {
         // Mobile SAM expects 1024x1024 - draw resized image at origin (0,0)
