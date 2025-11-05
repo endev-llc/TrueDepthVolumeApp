@@ -592,18 +592,18 @@ struct DepthVisualization3DView: View {
             timer.lap("Centered refinement points")
         }
         
-        // Center background surface points if they exist
-                var centeredBackgroundPoints: [SCNVector3]? = nil
-                if !cameraManager.backgroundSurfacePoints.isEmpty {
-                    var bgPoints = convertDepthPointsTo3D(cameraManager.backgroundSurfacePoints)
-                    for i in 0..<bgPoints.count {
-                        bgPoints[i].x -= center.x
-                        bgPoints[i].y -= center.y
-                        bgPoints[i].z -= center.z
-                    }
-                    centeredBackgroundPoints = bgPoints
-                    timer.lap("Centered background surface points")
-                }
+        // Center background surface points if they exist (FILTERED VERSION for plane fitting ONLY)
+        var centeredBackgroundPointsForPlane: [SCNVector3]? = nil
+        if !cameraManager.backgroundSurfacePointsForPlane.isEmpty {
+            var bgPoints = convertDepthPointsTo3D(cameraManager.backgroundSurfacePointsForPlane)
+            for i in 0..<bgPoints.count {
+                bgPoints[i].x -= center.x
+                bgPoints[i].y -= center.y
+                bgPoints[i].z -= center.z
+            }
+            centeredBackgroundPointsForPlane = bgPoints
+            timer.lap("Centered background surface points for plane fitting (steep gradients filtered)")
+        }
         
         // Create geometries (OPTIMIZED)
         let primaryPointCloudGeometry = createPointCloudGeometry(from: primaryMeasurementPoints3D)
@@ -611,7 +611,7 @@ struct DepthVisualization3DView: View {
         
         let primaryPointCloudNodeInstance = SCNNode(geometry: primaryPointCloudGeometry)
         
-        let (primaryVoxelGeometry, primaryVolumeInfo) = createVoxelGeometry(from: primaryMeasurementPoints3D, refinementMask: refinementMeasurementPoints3D, backgroundPoints: centeredBackgroundPoints)
+        let (primaryVoxelGeometry, primaryVolumeInfo) = createVoxelGeometry(from: primaryMeasurementPoints3D, refinementMask: refinementMeasurementPoints3D, backgroundPoints: centeredBackgroundPointsForPlane)
         timer.lap("Created voxel geometry")
         
         let primaryVoxelNodeInstance = SCNNode(geometry: primaryVoxelGeometry)

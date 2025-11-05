@@ -52,6 +52,7 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
     var maskDimensions: CGSize = .zero
     var boundaryDepthPoints: [DepthPoint] = []  // Boundary points with depth values for plane fitting
     var backgroundSurfacePoints: [DepthPoint] = []  // Store background surface points for plane fitting
+    var backgroundSurfacePointsForPlane: [DepthPoint] = []  // Filtered points for plane calculation only (no steep gradients)
 
     override init() {
         super.init()
@@ -1749,9 +1750,65 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
                 }
             }
             
-            // Store for use by 3D visualization
+            // Store ALL points for 3D visualization (unfiltered)
             self.backgroundSurfacePoints = depthPoints
+
+            // Filter out steep gradients for plane fitting only
+            let filteredPoints = self.filterSteepGradientPoints(depthPoints, maxGradientThreshold: 0.01)
+            self.backgroundSurfacePointsForPlane = filteredPoints
+
             print("✅ Successfully extracted \(depthPoints.count) background surface points with depth values")
+            print("   Using \(filteredPoints.count) flat surface points for plane fitting (filtered out steep gradients)")
             print(String(repeating: "=", count: 60) + "\n")
         }
+    
+    // MARK: - Filter Steep Gradient Points
+    private func filterSteepGradientPoints(_ points: [DepthPoint], maxGradientThreshold: Float = 0.01) -> [DepthPoint] {
+        guard !points.isEmpty else { return points }
+        
+        print("Filtering steep gradients from \(points.count) points...")
+        
+        // Create a lookup map for fast neighbor access
+        var depthMap: [String: Float] = [:]
+        for point in points {
+            let key = "\(Int(point.x)),\(Int(point.y))"
+            depthMap[key] = point.depth
+        }
+        
+        var filteredPoints: [DepthPoint] = []
+        
+        for point in points {
+            let x = Int(point.x)
+            let y = Int(point.y)
+            var maxGradient: Float = 0
+            
+            // Check 8-connected neighbors
+            let neighbors = [
+                (x-1, y), (x+1, y), (x, y-1), (x, y+1),  // Cardinal directions
+                (x-1, y-1), (x-1, y+1), (x+1, y-1), (x+1, y+1)  // Diagonals
+            ]
+            
+            for (nx, ny) in neighbors {
+                let key = "\(nx),\(ny)"
+                if let neighborDepth = depthMap[key] {
+                    let depthDiff = abs(neighborDepth - point.depth)
+                    // Distance: 1 pixel for cardinal, sqrt(2) for diagonal
+                    let distance: Float = (nx == x || ny == y) ? 1.0 : 1.414
+                    let gradient = depthDiff / distance  // meters per pixel
+                    maxGradient = max(maxGradient, gradient)
+                }
+            }
+            
+            // Only include points with gradients below threshold (flat surfaces)
+            if maxGradient <= maxGradientThreshold {
+                filteredPoints.append(point)
+            }
+        }
+        
+        let removedCount = points.count - filteredPoints.count
+        print("✅ Filtered out \(removedCount) steep gradient points (\(String(format: "%.1f", Float(removedCount) / Float(points.count) * 100))%)")
+        print("   Kept \(filteredPoints.count) flat surface points for plane fitting")
+        
+        return filteredPoints
+    }
 }
