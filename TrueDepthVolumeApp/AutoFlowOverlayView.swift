@@ -748,6 +748,9 @@ struct UnifiedSegmentOverlayView: View {
         let compositedPrimaryMask = recompositeMaskHistory(primaryOriginalMasks)
         let compositedRefinementMask = recompositeMaskHistory(refinementOriginalMasks)
         
+        // STORE REFINEMENT MASK FOR BACKGROUND EXCLUSION:
+        cameraManager.refinementMaskForBackground = compositedRefinementMask
+        
         print("🔍 Unified Mask Application:")
         print("   Primary mask exists: \(compositedPrimaryMask != nil)")
         print("   Refinement mask exists: \(compositedRefinementMask != nil)")
@@ -1174,13 +1177,14 @@ struct BackgroundSelectionOverlayView: View {
             await MainActor.run {
                 if let photoMask = photoMask, let depthMask = depthMask {
                     // Intersect the two masks to get only common pixels
-                    // Use depth image dimensions (smaller) to avoid memory issues
                     let targetSize = depthImage.size
                     
                     if let intersectedMask = intersectMasks(photoMask, depthMask, targetSize: targetSize) {
                         print("✅ Successfully intersected photo and depth masks")
                         let filteredMask = filterTopAndBottom5Percent(intersectedMask)
-                        maskHistory.append(filteredMask)
+                        // EXCLUDE REFINEMENT MASK PIXELS BEFORE ADDING TO HISTORY:
+                        let finalMask = excludeRefinementMaskPixels(filteredMask) ?? filteredMask
+                        maskHistory.append(finalMask)
                         self.maskImage = recompositeMaskHistory()
                         self.showConfirmButton = true
                     } else {
@@ -1191,7 +1195,9 @@ struct BackgroundSelectionOverlayView: View {
                     // Fallback to photo mask only if depth mask failed
                     if let photoMask = photoMask {
                         let filteredMask = filterTopAndBottom5Percent(photoMask)
-                        maskHistory.append(filteredMask)
+                        // EXCLUDE REFINEMENT MASK PIXELS BEFORE ADDING TO HISTORY:
+                        let finalMask = excludeRefinementMaskPixels(filteredMask) ?? filteredMask
+                        maskHistory.append(finalMask)
                         self.maskImage = recompositeMaskHistory()
                         self.showConfirmButton = true
                     }
@@ -1391,6 +1397,96 @@ struct BackgroundSelectionOverlayView: View {
         return UIImage(cgImage: filteredCGImage, scale: mask.scale, orientation: mask.imageOrientation)
     }
     
+    // MARK: - Refinement Mask Exclusion
+    private func excludeRefinementMaskPixels(_ backgroundMask: UIImage) -> UIImage? {
+        guard let refinementMask = cameraManager.refinementMaskForBackground,
+              let bgCGImage = backgroundMask.cgImage,
+              let refinementCGImage = refinementMask.cgImage else {
+            return backgroundMask
+        }
+        
+        let width = bgCGImage.width
+        let height = bgCGImage.height
+        
+        // Resize refinement mask to match background mask dimensions if needed
+        let resizedRefinementMask: UIImage
+        if refinementCGImage.width != width || refinementCGImage.height != height {
+            resizedRefinementMask = resizeMaskEfficiently(refinementMask, to: CGSize(width: width, height: height)) ?? refinementMask
+        } else {
+            resizedRefinementMask = refinementMask
+        }
+        
+        guard let resizedRefinementCGImage = resizedRefinementMask.cgImage else {
+            return backgroundMask
+        }
+        
+        // Extract pixel data
+        var bgData = [UInt8](repeating: 0, count: width * height * 4)
+        var refinementData = [UInt8](repeating: 0, count: width * height * 4)
+        
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        
+        guard let bgContext = CGContext(
+            data: &bgData,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let refinementContext = CGContext(
+            data: &refinementData,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return backgroundMask
+        }
+        
+        bgContext.draw(bgCGImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        refinementContext.draw(resizedRefinementCGImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        
+        // Create result mask - exclude pixels that are in refinement mask
+        var resultData = [UInt8](repeating: 0, count: width * height * 4)
+        var excludedCount = 0
+        
+        for i in 0..<(width * height) {
+            let index = i * 4
+            let bgMasked = bgData[index] > 128
+            let refinementMasked = refinementData[index] > 128
+            
+            // Only include if in background mask AND NOT in refinement mask
+            if bgMasked && !refinementMasked {
+                resultData[index] = 139     // R
+                resultData[index + 1] = 69  // G
+                resultData[index + 2] = 19  // B
+                resultData[index + 3] = 255 // A
+            } else if bgMasked && refinementMasked {
+                excludedCount += 1
+            }
+        }
+        
+        print("🚫 Excluded \(excludedCount) background pixels that overlap with refinement mask")
+        
+        // Create result image
+        guard let resultContext = CGContext(
+            data: &resultData,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let resultCGImage = resultContext.makeImage() else {
+            return backgroundMask
+        }
+        
+        return UIImage(cgImage: resultCGImage, scale: backgroundMask.scale, orientation: backgroundMask.imageOrientation)
+    }
+    
     // MARK: - Pen Drawing Functions
     private func finishDrawing() {
         guard !currentDrawingPath.isEmpty else {
@@ -1401,7 +1497,9 @@ struct BackgroundSelectionOverlayView: View {
         let imageToUse = photo ?? depthImage
         
         if let drawnMask = createMaskFromPath(currentDrawingPath, brushSize: brushSize, in: imageFrame, imageSize: imageToUse.size) {
-            maskHistory.append(drawnMask)
+            // EXCLUDE REFINEMENT MASK PIXELS BEFORE ADDING TO HISTORY:
+            let finalMask = excludeRefinementMaskPixels(drawnMask) ?? drawnMask
+            maskHistory.append(finalMask)
             maskImage = recompositeMaskHistory()
             showConfirmButton = true
         }
@@ -1450,7 +1548,9 @@ struct BackgroundSelectionOverlayView: View {
                     if let intersectedMask = intersectMasks(photoMask, depthMask, targetSize: targetSize) {
                         print("✅ Successfully intersected photo and depth masks from box")
                         let filteredMask = filterTopAndBottom5Percent(intersectedMask)
-                        maskHistory.append(filteredMask)
+                        // EXCLUDE REFINEMENT MASK PIXELS BEFORE ADDING TO HISTORY:
+                        let finalMask = excludeRefinementMaskPixels(filteredMask) ?? filteredMask
+                        maskHistory.append(finalMask)
                         self.maskImage = recompositeMaskHistory()
                         self.showConfirmButton = true
                     } else {
@@ -1461,7 +1561,9 @@ struct BackgroundSelectionOverlayView: View {
                     // Fallback to photo mask only if depth mask failed
                     if let photoMask = photoMask {
                         let filteredMask = filterTopAndBottom5Percent(photoMask)
-                        maskHistory.append(filteredMask)
+                        // EXCLUDE REFINEMENT MASK PIXELS BEFORE ADDING TO HISTORY:
+                        let finalMask = excludeRefinementMaskPixels(filteredMask) ?? filteredMask
+                        maskHistory.append(finalMask)
                         self.maskImage = recompositeMaskHistory()
                         self.showConfirmButton = true
                     }

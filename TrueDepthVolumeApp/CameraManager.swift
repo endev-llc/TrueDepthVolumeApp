@@ -37,6 +37,7 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
     
     var errorMessage = ""
     var fileToShare: URL?
+    var refinementMaskForBackground: UIImage?
 
     private var latestDepthData: AVDepthData?
     private var currentDepthData: AVDepthData?
