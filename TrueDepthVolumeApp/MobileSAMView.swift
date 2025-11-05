@@ -43,6 +43,13 @@ struct MobileSAMView: View {
     @State private var imageDisplaySize: CGSize = .zero
     @State private var isImageEncoded = false
     
+    // Box drawing states
+    @State private var isBoxMode = false
+    @State private var boxStartPoint: CGPoint?
+    @State private var boxCurrentPoint: CGPoint?
+    @State private var isDrawingBox = false
+    @State private var imageRect: CGRect = .zero
+    
     var body: some View {
         NavigationView {
             GeometryReader { geometry in
@@ -104,7 +111,7 @@ struct MobileSAMView: View {
         }
         
         // Calculate the actual frame where the image is positioned
-        let imageRect = CGRect(
+        let calculatedImageRect = CGRect(
             x: (geometry.size.width - displaySize.width) / 2,
             y: (geometry.size.height - displaySize.height) / 2,
             width: displaySize.width,
@@ -122,6 +129,7 @@ struct MobileSAMView: View {
                     .clipped()
                     .onAppear {
                         imageDisplaySize = displaySize
+                        imageRect = calculatedImageRect
                         debugImageLayout(geometry: geometry, imageSize: image.size)
                     }
                 
@@ -137,8 +145,17 @@ struct MobileSAMView: View {
                         }
                 }
                 
+                // Box drawing overlay
+                if isBoxMode && boxStartPoint != nil && boxCurrentPoint != nil {
+                    BoxDrawingOverlay(
+                        startPoint: boxStartPoint!,
+                        currentPoint: boxCurrentPoint!,
+                        imageFrame: calculatedImageRect
+                    )
+                }
+                
                 // Tap indicator
-                if tapLocation != .zero {
+                if tapLocation != .zero && !isBoxMode {
                     Circle()
                         .fill(Color.red)
                         .frame(width: 12, height: 12)
@@ -147,8 +164,29 @@ struct MobileSAMView: View {
                 }
             }
             .contentShape(Rectangle())
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        if isBoxMode && calculatedImageRect.contains(value.startLocation) {
+                            if !isDrawingBox {
+                                isDrawingBox = true
+                                boxStartPoint = value.startLocation
+                                boxCurrentPoint = value.location
+                            } else {
+                                boxCurrentPoint = value.location
+                            }
+                        }
+                    }
+                    .onEnded { _ in
+                        if isBoxMode && isDrawingBox {
+                            finishBoxDrawing(imageRect: calculatedImageRect, geometry: geometry)
+                        }
+                    }
+            )
             .onTapGesture { location in
-                handleImageTap(at: location, imageRect: imageRect, geometry: geometry)
+                if !isBoxMode {
+                    handleImageTap(at: location, imageRect: calculatedImageRect, geometry: geometry)
+                }
             }
         }
         .toolbar {
@@ -256,7 +294,23 @@ struct MobileSAMView: View {
                             .foregroundColor(.white)
                             .cornerRadius(8)
                     } else {
-                        Text("Tap to segment (multiple taps combine)")
+                        // Box mode toggle
+                        Button(action: {
+                            isBoxMode.toggle()
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: isBoxMode ? "rectangle.dashed" : "rectangle")
+                                Text(isBoxMode ? "Box Mode" : "Point Mode")
+                            }
+                            .font(.caption)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(isBoxMode ? Color.green.opacity(0.8) : Color.blue.opacity(0.8))
+                            .foregroundColor(.white)
+                            .cornerRadius(8)
+                        }
+                        
+                        Text(isBoxMode ? "Drag to draw box" : "Tap to segment")
                             .font(.caption)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
@@ -304,9 +358,48 @@ struct MobileSAMView: View {
             let mask = await samManager.generateMask(at: relativeLocation, in: imageDisplaySize)
             await MainActor.run {
                 if let mask = mask {
-                    // CHANGED: Composite instead of replace
+                    // Composite instead of replace
                     self.maskImage = compositeMasks(self.maskImage, with: mask)
                 }
+            }
+        }
+    }
+    
+    private func finishBoxDrawing(imageRect: CGRect, geometry: GeometryProxy) {
+        guard let start = boxStartPoint, let end = boxCurrentPoint,
+              imageRect.contains(start) && imageRect.contains(end),
+              isImageEncoded && !samManager.isLoading else {
+            boxStartPoint = nil
+            boxCurrentPoint = nil
+            isDrawingBox = false
+            return
+        }
+        
+        // Create box rect from start and end points (relative to image)
+        let minX = min(start.x, end.x) - imageRect.minX
+        let minY = min(start.y, end.y) - imageRect.minY
+        let maxX = max(start.x, end.x) - imageRect.minX
+        let maxY = max(start.y, end.y) - imageRect.minY
+        
+        let boxRect = CGRect(
+            x: minX,
+            y: minY,
+            width: maxX - minX,
+            height: maxY - minY
+        )
+        
+        // Generate mask using box prompt
+        Task {
+            let mask = await samManager.generateMask(withBox: boxRect, in: imageDisplaySize)
+            await MainActor.run {
+                if let mask = mask {
+                    // Composite instead of replace
+                    self.maskImage = compositeMasks(self.maskImage, with: mask)
+                }
+                
+                boxStartPoint = nil
+                boxCurrentPoint = nil
+                isDrawingBox = false
             }
         }
     }
@@ -315,6 +408,10 @@ struct MobileSAMView: View {
         isImageEncoded = false
         maskImage = nil
         tapLocation = .zero
+        isBoxMode = false
+        boxStartPoint = nil
+        boxCurrentPoint = nil
+        isDrawingBox = false
         
         Task {
             let success = await samManager.encodeImage(image)
@@ -329,6 +426,10 @@ struct MobileSAMView: View {
         maskImage = nil
         tapLocation = .zero
         isImageEncoded = false
+        isBoxMode = false
+        boxStartPoint = nil
+        boxCurrentPoint = nil
+        isDrawingBox = false
         samManager.currentImageEmbeddings = nil
     }
     

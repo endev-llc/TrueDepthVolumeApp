@@ -113,7 +113,6 @@ struct UnifiedSegmentOverlayView: View {
     @State private var isDrawingPrimary = true // Toggle between primary and refinement pen drawing
     
     // Box drawing states
-    @State private var isBoxMode = false
     @State private var boxStartPoint: CGPoint?
     @State private var boxCurrentPoint: CGPoint?
     @State private var isDrawingBox = false
@@ -139,24 +138,9 @@ struct UnifiedSegmentOverlayView: View {
                     
                     Spacer()
                     
-                    // Box mode toggle
-                    Button(action: {
-                        isBoxMode.toggle()
-                        if isBoxMode {
-                            isPenMode = false  // Disable pen mode when box mode is on
-                        }
-                    }) {
-                        Image(systemName: isBoxMode ? "rectangle.dashed" : "rectangle")
-                            .font(.title2)
-                            .foregroundColor(isBoxMode ? .green : .white)
-                    }
-                    
                     // Pen mode toggle with color indicator
                     Button(action: {
                         isPenMode.toggle()
-                        if isPenMode {
-                            isBoxMode = false  // Disable box mode when pen mode is on
-                        }
                     }) {
                         Image(systemName: isPenMode ? "pencil.circle.fill" : "pencil.circle")
                             .font(.title2)
@@ -223,7 +207,7 @@ struct UnifiedSegmentOverlayView: View {
                 }
                 
                 // Opacity slider (only show if photo exists and not in pen mode)
-                if photo != nil && !isPenMode && !isBoxMode {
+                if photo != nil && !isPenMode {
                     HStack {
                         Image(systemName: "photo")
                             .foregroundColor(.white)
@@ -291,7 +275,7 @@ struct UnifiedSegmentOverlayView: View {
                         }
                         
                         // Box drawing overlay
-                        if isBoxMode && boxStartPoint != nil && boxCurrentPoint != nil {
+                        if boxStartPoint != nil && boxCurrentPoint != nil {
                             BoxDrawingOverlay(
                                 startPoint: boxStartPoint!,
                                 currentPoint: boxCurrentPoint!,
@@ -300,7 +284,7 @@ struct UnifiedSegmentOverlayView: View {
                         }
                         
                         // Tap indicator
-                        if tapLocation != .zero && !isPenMode && !isBoxMode {
+                        if tapLocation != .zero && !isPenMode {
                             Circle()
                                 .fill(Color.red)
                                 .frame(width: 12, height: 12)
@@ -313,15 +297,8 @@ struct UnifiedSegmentOverlayView: View {
                     .simultaneousGesture(
                         DragGesture(minimumDistance: 0)
                             .onChanged { value in
-                                if isBoxMode && imageFrame.contains(value.startLocation) {
-                                    if !isDrawingBox {
-                                        isDrawingBox = true
-                                        boxStartPoint = value.startLocation
-                                        boxCurrentPoint = value.location
-                                    } else {
-                                        boxCurrentPoint = value.location
-                                    }
-                                } else if isPenMode && imageFrame.contains(value.location) {
+                                if isPenMode && imageFrame.contains(value.location) {
+                                    // Pen drawing mode
                                     if !isDrawing {
                                         isDrawing = true
                                         currentDrawingPath = [value.location]
@@ -332,21 +309,39 @@ struct UnifiedSegmentOverlayView: View {
                                         }
                                         currentDrawingPath.append(value.location)
                                     }
+                                } else if !isPenMode && imageFrame.contains(value.startLocation) {
+                                    // Box drawing mode (auto-detect based on drag distance)
+                                    let dragDistance = hypot(value.location.x - value.startLocation.x,
+                                                           value.location.y - value.startLocation.y)
+                                    
+                                    if dragDistance > 10 { // Threshold to distinguish tap from drag
+                                        if !isDrawingBox {
+                                            isDrawingBox = true
+                                            boxStartPoint = value.startLocation
+                                            boxCurrentPoint = value.location
+                                        } else {
+                                            boxCurrentPoint = value.location
+                                        }
+                                    }
                                 }
                             }
-                            .onEnded { _ in
-                                if isBoxMode && isDrawingBox {
-                                    finishBoxDrawing()
-                                } else if isPenMode && isDrawing {
+                            .onEnded { value in
+                                if isPenMode && isDrawing {
                                     finishDrawing()
+                                } else if !isPenMode {
+                                    let dragDistance = hypot(value.location.x - value.startLocation.x,
+                                                           value.location.y - value.startLocation.y)
+                                    
+                                    if dragDistance > 10 && isDrawingBox {
+                                        // It was a box drag
+                                        finishBoxDrawing()
+                                    } else if dragDistance <= 10 && imageFrame.contains(value.location) {
+                                        // It was a tap - do point prompt
+                                        handleUnifiedTap(at: value.location)
+                                    }
                                 }
                             }
                     )
-                    .onTapGesture { location in
-                        if !isPenMode && !isBoxMode {
-                            handleUnifiedTap(at: location)
-                        }
-                    }
                 }
                 .coordinateSpace(name: "imageContainer")
                 .padding()
@@ -399,9 +394,7 @@ struct UnifiedSegmentOverlayView: View {
     
     // MARK: - Helper Functions
     private func getInstructionText() -> String {
-        if isBoxMode {
-            return "Drag diagonally to draw a box around the object."
-        } else if isPenMode {
+        if isPenMode {
             if isDrawingPrimary {
                 return "Draw on primary object (blue). Tap P/R to switch to refinement mode."
             } else {
@@ -410,9 +403,9 @@ struct UnifiedSegmentOverlayView: View {
         } else if !isDepthEncoded || !isPhotoEncoded {
             return "Encoding images for AI segmentation..."
         } else if primaryMaskImage == nil && refinementMaskImage == nil {
-            return "Tap to select: Blue = primary object, Yellow = food contents inside."
+            return "Tap to select or drag to draw box: Blue = primary object, Yellow = food contents inside."
         } else {
-            return "Blue = primary, Yellow = contents. Tap more to add, or tap ✓ when done."
+            return "Blue = primary, Yellow = contents. Tap or drag box to add more, or tap ✓ when done."
         }
     }
     
@@ -839,7 +832,6 @@ struct BackgroundSelectionOverlayView: View {
     @State private var isDrawing = false
     
     // Box drawing states
-    @State private var isBoxMode = false
     @State private var boxStartPoint: CGPoint?
     @State private var boxCurrentPoint: CGPoint?
     @State private var isDrawingBox = false
@@ -872,24 +864,9 @@ struct BackgroundSelectionOverlayView: View {
                             .foregroundColor(.gray)
                     }
                     
-                    // Box mode toggle
-                    Button(action: {
-                        isBoxMode.toggle()
-                        if isBoxMode {
-                            isPenMode = false
-                        }
-                    }) {
-                        Image(systemName: isBoxMode ? "rectangle.dashed" : "rectangle")
-                            .font(.title2)
-                            .foregroundColor(isBoxMode ? .green : .white)
-                    }
-                    
                     // Pen mode toggle
                     Button(action: {
                         isPenMode.toggle()
-                        if isPenMode {
-                            isBoxMode = false
-                        }
                     }) {
                         Image(systemName: isPenMode ? "pencil.circle.fill" : "pencil.circle")
                             .font(.title2)
@@ -1000,7 +977,7 @@ struct BackgroundSelectionOverlayView: View {
                         }
                         
                         // Box drawing overlay
-                        if isBoxMode && boxStartPoint != nil && boxCurrentPoint != nil {
+                        if boxStartPoint != nil && boxCurrentPoint != nil {
                             BoxDrawingOverlay(
                                 startPoint: boxStartPoint!,
                                 currentPoint: boxCurrentPoint!,
@@ -1009,7 +986,7 @@ struct BackgroundSelectionOverlayView: View {
                         }
                         
                         // Tap indicator
-                        if tapLocation != .zero && !isPenMode && !isBoxMode {
+                        if tapLocation != .zero && !isPenMode {
                             Circle()
                                 .fill(Color.red)
                                 .frame(width: 12, height: 12)
@@ -1038,15 +1015,8 @@ struct BackgroundSelectionOverlayView: View {
                     .simultaneousGesture(
                         DragGesture(minimumDistance: 0)
                             .onChanged { value in
-                                if isBoxMode && imageFrame.contains(value.startLocation) {
-                                    if !isDrawingBox {
-                                        isDrawingBox = true
-                                        boxStartPoint = value.startLocation
-                                        boxCurrentPoint = value.location
-                                    } else {
-                                        boxCurrentPoint = value.location
-                                    }
-                                } else if isPenMode && imageFrame.contains(value.location) {
+                                if isPenMode && imageFrame.contains(value.location) {
+                                    // Pen drawing mode
                                     if !isDrawing {
                                         isDrawing = true
                                         currentDrawingPath = [value.location]
@@ -1057,21 +1027,39 @@ struct BackgroundSelectionOverlayView: View {
                                         }
                                         currentDrawingPath.append(value.location)
                                     }
+                                } else if !isPenMode && imageFrame.contains(value.startLocation) {
+                                    // Box drawing mode (auto-detect based on drag distance)
+                                    let dragDistance = hypot(value.location.x - value.startLocation.x,
+                                                           value.location.y - value.startLocation.y)
+                                    
+                                    if dragDistance > 10 { // Threshold to distinguish tap from drag
+                                        if !isDrawingBox {
+                                            isDrawingBox = true
+                                            boxStartPoint = value.startLocation
+                                            boxCurrentPoint = value.location
+                                        } else {
+                                            boxCurrentPoint = value.location
+                                        }
+                                    }
                                 }
                             }
-                            .onEnded { _ in
-                                if isBoxMode && isDrawingBox {
-                                    finishBoxDrawing()
-                                } else if isPenMode && isDrawing {
+                            .onEnded { value in
+                                if isPenMode && isDrawing {
                                     finishDrawing()
+                                } else if !isPenMode {
+                                    let dragDistance = hypot(value.location.x - value.startLocation.x,
+                                                           value.location.y - value.startLocation.y)
+                                    
+                                    if dragDistance > 10 && isDrawingBox {
+                                        // It was a box drag
+                                        finishBoxDrawing()
+                                    } else if dragDistance <= 10 && imageFrame.contains(value.location) {
+                                        // It was a tap - do point prompt
+                                        handleBackgroundTap(at: value.location)
+                                    }
                                 }
                             }
                     )
-                    .onTapGesture { location in
-                        if !isPenMode && !isBoxMode {
-                            handleBackgroundTap(at: location)
-                        }
-                    }
                 }
                 .coordinateSpace(name: "backgroundContainer")
                 .padding()
@@ -1094,16 +1082,14 @@ struct BackgroundSelectionOverlayView: View {
     
     // MARK: - Helper Functions
     private func getBackgroundInstructionText() -> String {
-        if isBoxMode {
-            return "Drag diagonally to draw a box around the background. Tap ✓ to apply or skip."
-        } else if isPenMode {
+        if isPenMode {
             return "Draw on the background surface. Tap ✓ to apply or skip to use automatic plane."
         } else if !isPhotoEncoded || !isDepthEncoded {
             return "Encoding images for precise background selection..."
         } else if maskImage == nil {
-            return "Tap the background surface. AI will match visual + depth for accuracy."
+            return "Tap the background or drag to draw box. AI will match visual + depth for accuracy."
         } else {
-            return "Background mask applied! Tap more areas to add, tap ✓ to apply or skip."
+            return "Background mask applied! Tap or drag box to add more, tap ✓ to apply or skip."
         }
     }
     
@@ -1220,7 +1206,7 @@ struct BackgroundSelectionOverlayView: View {
         let width = Int(targetSize.width)
         let height = Int(targetSize.height)
         
-        print("📏 Intersecting masks at target size: \(width)x\(height)")
+        print("🔍 Intersecting masks at target size: \(width)x\(height)")
         print("   Original mask1 size: \(mask1.size)")
         print("   Original mask2 size: \(mask2.size)")
         
