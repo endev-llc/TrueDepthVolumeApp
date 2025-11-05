@@ -157,10 +157,10 @@ class MobileSAMManager: ObservableObject {
                 isLoading = false
             }
             
-            // Convert mask to UIImage
-            if let masks = outputs["masks"] {
+            // Convert mask to UIImage - use best mask based on IOU predictions
+            if let masks = outputs["masks"], let iouPreds = outputs["iou_predictions"] {
                 let maskImageStart = CFAbsoluteTimeGetCurrent()
-                let result = try createMaskImage(from: masks)
+                let result = try createMaskImage(from: masks, iouPredictions: iouPreds)
                 let maskImageTime = CFAbsoluteTimeGetCurrent() - maskImageStart
                 print("⏱️ Mask image creation took: \(String(format: "%.3f", maskImageTime))s")
                 
@@ -243,10 +243,10 @@ class MobileSAMManager: ObservableObject {
                 isLoading = false
             }
             
-            // Convert mask to UIImage
-            if let masks = outputs["masks"] {
+            // Convert mask to UIImage - use best mask based on IOU predictions
+            if let masks = outputs["masks"], let iouPreds = outputs["iou_predictions"] {
                 let maskImageStart = CFAbsoluteTimeGetCurrent()
-                let result = try createMaskImage(from: masks)
+                let result = try createMaskImage(from: masks, iouPredictions: iouPreds)
                 let maskImageTime = CFAbsoluteTimeGetCurrent() - maskImageStart
                 print("⏱️ Mask image creation took: \(String(format: "%.3f", maskImageTime))s")
                 
@@ -297,7 +297,7 @@ class MobileSAMManager: ObservableObject {
         prePadX = 0.0  // Drawing at origin (top-left)
         prePadY = 0.0  // Drawing at origin (top-left)
         
-        print("ENCODER PREPROCESS — scale=\(preScale), padX=\(prePadX), padY=\(prePadY), scaled=\(scaledSize.width)x\(scaledSize.height)")
+        print("ENCODER PREPROCESS – scale=\(preScale), padX=\(prePadX), padY=\(prePadY), scaled=\(scaledSize.width)x\(scaledSize.height)")
         
         UIGraphicsBeginImageContextWithOptions(targetSize, false, 1.0)
         
@@ -393,7 +393,7 @@ class MobileSAMManager: ObservableObject {
         let modelX = prePadX + nx * scaledW
         let modelY = prePadY + ny * scaledH
 
-        print("POINT MAP — nx=\(nx), ny=\(ny) → model(\(Int(modelX)), \(Int(modelY)))  scale=\(preScale) pad=(\(prePadX),\(prePadY))")
+        print("POINT MAP – nx=\(nx), ny=\(ny) → model(\(Int(modelX)), \(Int(modelY)))  scale=\(preScale) pad=(\(prePadX),\(prePadY))")
         return CGPoint(x: modelX, y: modelY)
     }
     
@@ -435,8 +435,27 @@ class MobileSAMManager: ObservableObject {
     }
     
     // MARK: - Mask Image Creation
-    private func createMaskImage(from maskTensor: ORTValue) throws -> UIImage? {
+    private func createMaskImage(from maskTensor: ORTValue, iouPredictions: ORTValue) throws -> UIImage? {
         let startTime = CFAbsoluteTimeGetCurrent()
+        
+        // Get IOU predictions to find best mask
+        guard let iouData = try iouPredictions.tensorData() as Data? else {
+            throw NSError(domain: "MaskProcessing", code: 3, userInfo: [NSLocalizedDescriptionKey: "Could not get IOU data"])
+        }
+        
+        // Find the mask with highest confidence
+        var bestMaskIndex = 0
+        var bestScore: Float32 = -1.0
+        iouData.withUnsafeBytes { bytes in
+            let iouBuffer = bytes.bindMemory(to: Float32.self)
+            for i in 0..<iouBuffer.count {
+                if iouBuffer[i] > bestScore {
+                    bestScore = iouBuffer[i]
+                    bestMaskIndex = i
+                }
+            }
+        }
+        print("🎯 Using mask \(bestMaskIndex) with confidence: \(bestScore)")
         
         guard let tensorData = try maskTensor.tensorData() as Data? else {
             throw NSError(domain: "MaskProcessing", code: 1, userInfo: [NSLocalizedDescriptionKey: "Could not get tensor data"])
@@ -467,7 +486,7 @@ class MobileSAMManager: ObservableObject {
         
         tensorData.withUnsafeBytes { bytes in
             let floatBuffer = bytes.bindMemory(to: Float32.self)
-            let maskStartIndex = 0 * width * height // First mask
+            let maskStartIndex = bestMaskIndex * width * height // Use best mask instead of first
             
             // Single pass - convert float tensor directly to RGBA pixels
             for i in 0..<(width * height) {
