@@ -484,6 +484,8 @@ class MobileSAMManager: ObservableObject {
         let binaryStart = CFAbsoluteTimeGetCurrent()
         var pixelData = [UInt8](repeating: 0, count: width * height * 4)
         
+        let confidenceThreshold: Float32 = 2.197  // 90% confidence (logit value)
+        
         tensorData.withUnsafeBytes { bytes in
             let floatBuffer = bytes.bindMemory(to: Float32.self)
             let maskStartIndex = bestMaskIndex * width * height // Use best mask instead of first
@@ -491,7 +493,7 @@ class MobileSAMManager: ObservableObject {
             // Single pass - convert float tensor directly to RGBA pixels
             for i in 0..<(width * height) {
                 let floatIndex = maskStartIndex + i
-                if floatIndex < floatBuffer.count && floatBuffer[floatIndex] > 0.0 {
+                if floatIndex < floatBuffer.count && floatBuffer[floatIndex] > confidenceThreshold {
                     let pixelIndex = i * 4
                     pixelData[pixelIndex] = 139     // R
                     pixelData[pixelIndex + 1] = 69  // G
