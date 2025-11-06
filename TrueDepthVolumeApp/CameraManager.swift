@@ -1753,8 +1753,11 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
             // Store ALL points for 3D visualization (unfiltered)
             self.backgroundSurfacePoints = depthPoints
 
+            // NEW: Filter out depth outliers (objects on surface) before filtering gradients
+            let depthFilteredPoints = self.filterDepthOutliers(depthPoints)
+
             // Filter out steep gradients for plane fitting only
-            let filteredPoints = self.filterSteepGradientPoints(depthPoints, maxGradientThreshold: 0.01)
+            let filteredPoints = self.filterSteepGradientPoints(depthFilteredPoints, maxGradientThreshold: 0.01)
             self.backgroundSurfacePointsForPlane = filteredPoints
 
             print("✅ Successfully extracted \(depthPoints.count) background surface points with depth values")
@@ -1808,6 +1811,36 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         let removedCount = points.count - filteredPoints.count
         print("✅ Filtered out \(removedCount) steep gradient points (\(String(format: "%.1f", Float(removedCount) / Float(points.count) * 100))%)")
         print("   Kept \(filteredPoints.count) flat surface points for plane fitting")
+        
+        return filteredPoints
+    }
+    
+    // MARK: - Filter Depth Outliers (Remove Objects on Surface)
+    private func filterDepthOutliers(_ points: [DepthPoint], depthThreshold: Float = 0.01) -> [DepthPoint] {
+        guard points.count > 10 else { return points }
+        
+        print("Filtering depth outliers from \(points.count) background points...")
+        
+        // Calculate median depth (more robust than mean)
+        let sortedDepths = points.map { $0.depth }.sorted()
+        let medianDepth = sortedDepths[sortedDepths.count / 2]
+        
+        // Calculate 25th percentile depth (represents the actual surface)
+        let percentile25Depth = sortedDepths[sortedDepths.count / 4]
+        
+        print("  Median depth: \(medianDepth)m, 25th percentile: \(percentile25Depth)m")
+        
+        // Filter out points that are significantly CLOSER than the 25th percentile
+        // (these are likely objects sitting ON the surface)
+        let minAllowedDepth = percentile25Depth - depthThreshold
+        
+        let filteredPoints = points.filter { point in
+            point.depth >= minAllowedDepth
+        }
+        
+        let removedCount = points.count - filteredPoints.count
+        print("✅ Filtered out \(removedCount) depth outliers (\(String(format: "%.1f", Float(removedCount) / Float(points.count) * 100))%)")
+        print("   Removed points closer than \(minAllowedDepth)m (threshold: \(percentile25Depth)m - \(depthThreshold)m)")
         
         return filteredPoints
     }
