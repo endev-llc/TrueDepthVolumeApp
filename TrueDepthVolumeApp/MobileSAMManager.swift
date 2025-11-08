@@ -104,8 +104,8 @@ class MobileSAMManager: ObservableObject {
         }
     }
 
-    // MARK: - Mask Generation
-    func generateMask(at point: CGPoint, in imageDisplaySize: CGSize) async -> UIImage? {
+    // MARK: - Mask Generation (UPDATED with outputSize parameter)
+    func generateMask(at point: CGPoint, in imageDisplaySize: CGSize, outputSize: CGSize? = nil) async -> UIImage? {
         let startTime = CFAbsoluteTimeGetCurrent()
         
         guard let decoderSession = decoderSession,
@@ -160,7 +160,7 @@ class MobileSAMManager: ObservableObject {
             // Convert mask to UIImage - use best mask based on IOU predictions
             if let masks = outputs["masks"], let iouPreds = outputs["iou_predictions"] {
                 let maskImageStart = CFAbsoluteTimeGetCurrent()
-                let result = try createMaskImage(from: masks, iouPredictions: iouPreds)
+                let result = try createMaskImage(from: masks, iouPredictions: iouPreds, targetSize: outputSize)
                 let maskImageTime = CFAbsoluteTimeGetCurrent() - maskImageStart
                 print("⏱️ Mask image creation took: \(String(format: "%.3f", maskImageTime))s")
                 
@@ -179,9 +179,9 @@ class MobileSAMManager: ObservableObject {
         
         return nil
     }
-    
-    // MARK: - Box-based Mask Generation
-    func generateMask(withBox box: CGRect, in imageDisplaySize: CGSize) async -> UIImage? {
+
+    // MARK: - Box-based Mask Generation (UPDATED with outputSize parameter)
+    func generateMask(withBox box: CGRect, in imageDisplaySize: CGSize, outputSize: CGSize? = nil) async -> UIImage? {
         let startTime = CFAbsoluteTimeGetCurrent()
         
         guard let decoderSession = decoderSession,
@@ -246,7 +246,7 @@ class MobileSAMManager: ObservableObject {
             // Convert mask to UIImage - use best mask based on IOU predictions
             if let masks = outputs["masks"], let iouPreds = outputs["iou_predictions"] {
                 let maskImageStart = CFAbsoluteTimeGetCurrent()
-                let result = try createMaskImage(from: masks, iouPredictions: iouPreds)
+                let result = try createMaskImage(from: masks, iouPredictions: iouPreds, targetSize: outputSize)
                 let maskImageTime = CFAbsoluteTimeGetCurrent() - maskImageStart
                 print("⏱️ Mask image creation took: \(String(format: "%.3f", maskImageTime))s")
                 
@@ -435,15 +435,14 @@ class MobileSAMManager: ObservableObject {
     }
     
     // MARK: - Mask Image Creation
-    private func createMaskImage(from maskTensor: ORTValue, iouPredictions: ORTValue) throws -> UIImage? {
+    private func createMaskImage(from maskTensor: ORTValue, iouPredictions: ORTValue, targetSize: CGSize? = nil) throws -> UIImage? {
         let startTime = CFAbsoluteTimeGetCurrent()
         
-        // Get IOU predictions to find best mask
+        // Get IOU predictions (unchanged)
         guard let iouData = try iouPredictions.tensorData() as Data? else {
             throw NSError(domain: "MaskProcessing", code: 3, userInfo: [NSLocalizedDescriptionKey: "Could not get IOU data"])
         }
         
-        // Find the mask with highest confidence
         var bestMaskIndex = 0
         var bestScore: Float32 = -1.0
         iouData.withUnsafeBytes { bytes in
@@ -466,56 +465,81 @@ class MobileSAMManager: ObservableObject {
             throw NSError(domain: "MaskProcessing", code: 2, userInfo: [NSLocalizedDescriptionKey: "Invalid mask shape"])
         }
         
-        let batchSize = shape[0].intValue
         let numMasks = shape[1].intValue
-        let height = shape[2].intValue
-        let width = shape[3].intValue
+        let originalHeight = shape[2].intValue
+        let originalWidth = shape[3].intValue
         
-        print("Mask tensor shape: \(shape)")
-        print("Interpreted as: batch=\(batchSize), masks=\(numMasks), height=\(height), width=\(width)")
-        print("Original image size: \(originalImageSize)")
+        // USE TARGET SIZE IF PROVIDED, OTHERWISE USE ORIGINAL
+        let finalWidth: Int
+        let finalHeight: Int
         
-        let expectedWidth = Int(originalImageSize.width)
-        let expectedHeight = Int(originalImageSize.height)
+        if let target = targetSize {
+            finalWidth = Int(target.width)
+            finalHeight = Int(target.height)
+            print("📐 Resizing mask from \(originalWidth)×\(originalHeight) to \(finalWidth)×\(finalHeight)")
+        } else {
+            finalWidth = originalWidth
+            finalHeight = originalHeight
+        }
         
-        print("Expected: \(expectedWidth)x\(expectedHeight), Got: \(width)x\(height)")
-        
-        // Create binary mask directly from tensor data - NO intermediate array
         let binaryStart = CFAbsoluteTimeGetCurrent()
-        var pixelData = [UInt8](repeating: 0, count: width * height * 4)
+        var pixelData = [UInt8](repeating: 0, count: finalWidth * finalHeight * 4)
         
-        let confidenceThreshold: Float32 = 2.197  // 90% confidence (logit value)
+        let confidenceThreshold: Float32 = 2.197
         
         tensorData.withUnsafeBytes { bytes in
             let floatBuffer = bytes.bindMemory(to: Float32.self)
-            let maskStartIndex = bestMaskIndex * width * height // Use best mask instead of first
+            let maskStartIndex = bestMaskIndex * originalWidth * originalHeight
             
-            // Single pass - convert float tensor directly to RGBA pixels
-            for i in 0..<(width * height) {
-                let floatIndex = maskStartIndex + i
-                if floatIndex < floatBuffer.count && floatBuffer[floatIndex] > confidenceThreshold {
-                    let pixelIndex = i * 4
-                    pixelData[pixelIndex] = 139     // R
-                    pixelData[pixelIndex + 1] = 69  // G
-                    pixelData[pixelIndex + 2] = 19  // B
-                    pixelData[pixelIndex + 3] = 255 // A
+            // If resizing, sample the original mask; otherwise direct copy
+            if finalWidth != originalWidth || finalHeight != originalHeight {
+                // Simple nearest-neighbor sampling
+                let scaleX = Float(originalWidth) / Float(finalWidth)
+                let scaleY = Float(originalHeight) / Float(finalHeight)
+                
+                for y in 0..<finalHeight {
+                    for x in 0..<finalWidth {
+                        let srcX = min(Int(Float(x) * scaleX), originalWidth - 1)
+                        let srcY = min(Int(Float(y) * scaleY), originalHeight - 1)
+                        let srcIndex = maskStartIndex + srcY * originalWidth + srcX
+                        
+                        if srcIndex < floatBuffer.count && floatBuffer[srcIndex] > confidenceThreshold {
+                            let dstIndex = (y * finalWidth + x) * 4
+                            pixelData[dstIndex] = 139
+                            pixelData[dstIndex + 1] = 69
+                            pixelData[dstIndex + 2] = 19
+                            pixelData[dstIndex + 3] = 255
+                        }
+                    }
                 }
-                // else stays 0 (transparent) from initialization
+            } else {
+                // Direct copy (current code)
+                for i in 0..<(finalWidth * finalHeight) {
+                    let floatIndex = maskStartIndex + i
+                    if floatIndex < floatBuffer.count && floatBuffer[floatIndex] > confidenceThreshold {
+                        let pixelIndex = i * 4
+                        pixelData[pixelIndex] = 139
+                        pixelData[pixelIndex + 1] = 69
+                        pixelData[pixelIndex + 2] = 19
+                        pixelData[pixelIndex + 3] = 255
+                    }
+                }
             }
         }
         
         let binaryTime = CFAbsoluteTimeGetCurrent() - binaryStart
         print("⏱️ Binary mask creation took: \(String(format: "%.3f", binaryTime))s")
         
+        // Create CGImage at final size
         let cgImageStart = CFAbsoluteTimeGetCurrent()
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
         
         guard let context = CGContext(data: &pixelData,
-                                     width: width,
-                                     height: height,
+                                     width: finalWidth,
+                                     height: finalHeight,
                                      bitsPerComponent: 8,
-                                     bytesPerRow: 4 * width,
+                                     bytesPerRow: 4 * finalWidth,
                                      space: colorSpace,
                                      bitmapInfo: bitmapInfo.rawValue),
               let cgImage = context.makeImage() else {
@@ -528,15 +552,9 @@ class MobileSAMManager: ObservableObject {
         print("⏱️ CGImage creation took: \(String(format: "%.3f", cgImageTime))s")
         print("Created mask image with size: \(maskImage.size)")
         
-        // Clean up the mask
-        let cleanupStart = CFAbsoluteTimeGetCurrent()
-        let result = maskImage
-        let cleanupTime = CFAbsoluteTimeGetCurrent() - cleanupStart
-        print("⏱️ Cleanup mask took: \(String(format: "%.3f", cleanupTime))s")
-        
         let totalTime = CFAbsoluteTimeGetCurrent() - startTime
         print("⏱️ TOTAL createMaskImage took: \(String(format: "%.3f", totalTime))s")
         
-        return result
+        return maskImage
     }
 }
