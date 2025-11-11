@@ -281,29 +281,17 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         return UIImage(cgImage: cgImage)
     }
     
-    // MARK: - ULTRA-FAST: Skip expansion entirely (mask is already good from MobileSAM)
+    // MARK: - Fast Morphological Mask Expansion (Boundary-Only Processing)
     private func simpleExpandMask(_ maskImage: UIImage) -> UIImage? {
-        guard let cgImage = maskImage.cgImage,
-              let depthImage = self.capturedDepthImage else {
+        guard let cgImage = maskImage.cgImage else {
             return maskImage
         }
-        
-        // Calculate expansion radius by analyzing actual depth gradients
-        let expansionRadius = calculateDepthBasedExpansionRadius(
-            maskImage: maskImage,
-            depthImage: depthImage
-        )
-        
-        guard expansionRadius > 0 else {
-            print("No expansion needed - mask already covers gradient zone")
-            return maskImage
-        }
-        
-        print("Expanding mask by \(expansionRadius) pixels based on depth gradient analysis")
         
         let width = cgImage.width
         let height = cgImage.height
         let totalPixels = width * height
+        
+        print("Expanding mask using fast boundary-based dilation...")
         
         // Extract mask data
         var maskData = [UInt8](repeating: 0, count: totalPixels * 4)
@@ -320,64 +308,96 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         context?.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
         
         // Create binary mask array
-        var isMask = [Bool](repeating: false, count: totalPixels)
+        var binaryMask = [Bool](repeating: false, count: totalPixels)
         for i in 0..<totalPixels {
-            isMask[i] = maskData[i * 4] > 128
+            let pixelIndex = i * 4
+            let red = maskData[pixelIndex]
+            binaryMask[i] = red > 128
         }
         
-        // Find boundary pixels
-        var boundaryPixels: [Int] = []
+        // Calculate dilation radius
+        let dilationRadius = max(50, min(width, height) / 100)
+        print("Applying \(dilationRadius) iterations of fast morphological dilation")
+        
+        // Find initial boundary pixels (only process these instead of all pixels)
+        var boundaryPixels = Set<Int>()
         for y in 0..<height {
             for x in 0..<width {
                 let index = y * width + x
-                if isMask[index] {
-                    let hasNonMaskNeighbor =
-                        (x > 0 && !isMask[index - 1]) ||
-                        (x < width - 1 && !isMask[index + 1]) ||
-                        (y > 0 && !isMask[index - width]) ||
-                        (y < height - 1 && !isMask[index + width])
-                    
-                    if hasNonMaskNeighbor {
-                        boundaryPixels.append(index)
+                if binaryMask[index] {
+                    // Check if this masked pixel has any non-masked neighbor
+                    var isBoundary = false
+                    for dy in -1...1 {
+                        for dx in -1...1 {
+                            if dx == 0 && dy == 0 { continue }
+                            let nx = x + dx
+                            let ny = y + dy
+                            if nx >= 0 && nx < width && ny >= 0 && ny < height {
+                                let neighborIndex = ny * width + nx
+                                if !binaryMask[neighborIndex] {
+                                    isBoundary = true
+                                    break
+                                }
+                            }
+                        }
+                        if isBoundary { break }
+                    }
+                    if isBoundary {
+                        boundaryPixels.insert(index)
                     }
                 }
             }
         }
         
-        // Perform dilation
-        var expandedMask = isMask
-        let radiusSquared = expansionRadius * expansionRadius
+        print("Initial boundary pixels: \(boundaryPixels.count)")
         
-        for boundaryIndex in boundaryPixels {
-            let by = boundaryIndex / width
-            let bx = boundaryIndex % width
+        // Iteratively expand only from boundary pixels
+        for iteration in 0..<dilationRadius {
+            var newBoundaryPixels = Set<Int>()
             
-            let minY = max(0, by - expansionRadius)
-            let maxY = min(height - 1, by + expansionRadius)
-            let minX = max(0, bx - expansionRadius)
-            let maxX = min(width - 1, bx + expansionRadius)
-            
-            for y in minY...maxY {
-                for x in minX...maxX {
-                    let dx = x - bx
-                    let dy = y - by
-                    let distSquared = dx * dx + dy * dy
-                    
-                    if distSquared <= radiusSquared {
-                        expandedMask[y * width + x] = true
+            // Only check neighbors of current boundary pixels
+            for boundaryIndex in boundaryPixels {
+                let bx = boundaryIndex % width
+                let by = boundaryIndex / width
+                
+                // Add all non-masked neighbors to the mask
+                for dy in -1...1 {
+                    for dx in -1...1 {
+                        if dx == 0 && dy == 0 { continue }
+                        
+                        let nx = bx + dx
+                        let ny = by + dy
+                        
+                        if nx >= 0 && nx < width && ny >= 0 && ny < height {
+                            let neighborIndex = ny * width + nx
+                            if !binaryMask[neighborIndex] {
+                                binaryMask[neighborIndex] = true
+                                newBoundaryPixels.insert(neighborIndex)
+                            }
+                        }
                     }
                 }
             }
+            
+            // The new boundary becomes the pixels we just added
+            boundaryPixels = newBoundaryPixels
+            
+            if boundaryPixels.isEmpty {
+                print("Expansion complete at iteration \(iteration + 1) (no more pixels to expand)")
+                break
+            }
         }
         
-        // Create expanded mask image
+        // Create expanded mask image with brown color
         var expandedMaskData = [UInt8](repeating: 0, count: totalPixels * 4)
         for i in 0..<totalPixels {
-            if expandedMask[i] {
-                expandedMaskData[i * 4] = 139
-                expandedMaskData[i * 4 + 1] = 69
-                expandedMaskData[i * 4 + 2] = 19
-                expandedMaskData[i * 4 + 3] = 255
+            if binaryMask[i] {
+                expandedMaskData[i * 4] = 139       // R - brown
+                expandedMaskData[i * 4 + 1] = 69    // G - brown
+                expandedMaskData[i * 4 + 2] = 19    // B - brown
+                expandedMaskData[i * 4 + 3] = 255   // A - opaque
+            } else {
+                expandedMaskData[i * 4 + 3] = 0     // A - transparent
             }
         }
         
@@ -393,139 +413,9 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
             return maskImage
         }
         
+        print("Fast mask expansion complete")
+        
         return UIImage(cgImage: expandedCGImage)
-    }
-
-    // MARK: - Calculate Expansion Radius from Actual Depth Data
-    private func calculateDepthBasedExpansionRadius(maskImage: UIImage, depthImage: UIImage) -> Int {
-        guard let maskCGImage = maskImage.cgImage,
-              let depthCGImage = depthImage.cgImage else {
-            return 0
-        }
-        
-        let width = maskCGImage.width
-        let height = maskCGImage.height
-        let totalPixels = width * height
-        
-        // Extract mask data
-        var maskData = [UInt8](repeating: 0, count: totalPixels * 4)
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        var maskContext = CGContext(
-            data: &maskData,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: width * 4,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        )
-        maskContext?.draw(maskCGImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-        
-        // Extract depth visualization data (contains the color-coded depth)
-        var depthData = [UInt8](repeating: 0, count: totalPixels * 4)
-        var depthContext = CGContext(
-            data: &depthData,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: width * 4,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        )
-        depthContext?.draw(depthCGImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-        
-        // Find mask boundary pixels
-        var boundaryPixels: [(x: Int, y: Int)] = []
-        for y in 0..<height {
-            for x in 0..<width {
-                let index = (y * width + x) * 4
-                if maskData[index] > 128 {
-                    // Check if boundary
-                    let hasNonMaskNeighbor =
-                        (x > 0 && maskData[(y * width + x - 1) * 4] <= 128) ||
-                        (x < width - 1 && maskData[(y * width + x + 1) * 4] <= 128) ||
-                        (y > 0 && maskData[((y - 1) * width + x) * 4] <= 128) ||
-                        (y < height - 1 && maskData[((y + 1) * width + x) * 4] <= 128)
-                    
-                    if hasNonMaskNeighbor {
-                        boundaryPixels.append((x, y))
-                    }
-                }
-            }
-        }
-        
-        guard !boundaryPixels.isEmpty else { return 0 }
-        
-        // Sample boundary pixels to measure gradient distance
-        let sampleSize = min(100, boundaryPixels.count)
-        let stepSize = max(1, boundaryPixels.count / sampleSize)
-        var gradientDistances: [Int] = []
-        
-        for i in stride(from: 0, to: boundaryPixels.count, by: stepSize) {
-            let (bx, by) = boundaryPixels[i]
-            let boundaryIndex = (by * width + bx) * 4
-            
-            // Get boundary color (represents depth)
-            let boundaryR = depthData[boundaryIndex]
-            let boundaryG = depthData[boundaryIndex + 1]
-            let boundaryB = depthData[boundaryIndex + 2]
-            
-            // Cast rays outward in 8 directions to find gradient extent
-            let directions = [(1,0), (-1,0), (0,1), (0,-1), (1,1), (1,-1), (-1,1), (-1,-1)]
-            
-            for (dx, dy) in directions {
-                var distance = 0
-                var x = bx
-                var y = by
-                var prevColorDistance: Float = 0
-                
-                // Walk outward until color stabilizes (gradient ends)
-                for _ in 0..<50 { // Max search distance
-                    x += dx
-                    y += dy
-                    
-                    if x < 0 || x >= width || y < 0 || y >= height { break }
-                    
-                    let currentIndex = (y * width + x) * 4
-                    let r = depthData[currentIndex]
-                    let g = depthData[currentIndex + 1]
-                    let b = depthData[currentIndex + 2]
-                    
-                    // Calculate color distance from boundary
-                    let dr = Float(Int(r) - Int(boundaryR))
-                    let dg = Float(Int(g) - Int(boundaryG))
-                    let db = Float(Int(b) - Int(boundaryB))
-                    let colorDistance = sqrt(dr*dr + dg*dg + db*db)
-                    
-                    // If color change rate drops significantly, gradient has ended
-                    if distance > 0 {
-                        let changeRate = abs(colorDistance - prevColorDistance)
-                        if changeRate < 2.0 && colorDistance > 50 { // Gradient stabilized
-                            break
-                        }
-                    }
-                    
-                    prevColorDistance = colorDistance
-                    distance += 1
-                }
-                
-                if distance > 0 {
-                    gradientDistances.append(distance)
-                }
-            }
-        }
-        
-        guard !gradientDistances.isEmpty else { return 10 } // Fallback minimum
-        
-        gradientDistances.sort()
-        // Use median instead of 75th percentile for more conservative expansion
-        let medianIndex = gradientDistances.count / 2
-        let expansionRadius = gradientDistances[medianIndex]
-
-        print("Analyzed \(gradientDistances.count) gradient measurements")
-        print("Gradient distances - min: \(gradientDistances.first!), median: \(expansionRadius), 75th: \(gradientDistances[Int(Float(gradientDistances.count) * 0.75)]), max: \(gradientDistances.last!)")
-        
-        return expansionRadius
     }
 
     // MARK: - Depth Data Delegate
