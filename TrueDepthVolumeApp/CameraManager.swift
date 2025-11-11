@@ -585,6 +585,7 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         
         self.photoOutput.capturePhoto(with: settings, delegate: self)
     }
+    
     private func processSimultaneousCapture() {
         guard let depthData = currentDepthData,
               let photoData = currentPhotoData else {

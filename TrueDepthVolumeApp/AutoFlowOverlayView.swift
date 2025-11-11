@@ -26,6 +26,7 @@ struct AutoFlowOverlayView: View {
     
     var body: some View {
         ZStack {
+            // Original content
             // Unified segmentation phase (combines primary + refinement)
             if flowState == .unifiedSegmentation {
                 UnifiedSegmentOverlayView(
@@ -38,6 +39,7 @@ struct AutoFlowOverlayView: View {
                     },
                     onDismiss: onComplete
                 )
+                .allowsHitTesting(!cameraManager.isEncodingImages) // Block interactions while encoding
             }
             
             // Background selection phase
@@ -58,6 +60,23 @@ struct AutoFlowOverlayView: View {
                     },
                     onDismiss: onComplete
                 )
+                .allowsHitTesting(!cameraManager.isEncodingImages) // Block interactions while encoding
+            }
+            
+            // Show loading overlay if still encoding
+            if cameraManager.isEncodingImages {
+                Color.black.opacity(0.7)
+                    .ignoresSafeArea()
+                
+                VStack(spacing: 20) {
+                    ProgressView()
+                        .scaleEffect(1.5)
+                        .tint(.white)
+                    
+                    Text("Preparing AI models...")
+                        .foregroundColor(.white)
+                        .font(.headline)
+                }
             }
         }
         .fullScreenCover(isPresented: $show3DView) {
@@ -300,7 +319,7 @@ struct UnifiedSegmentOverlayView: View {
                                 .fill(Color.red)
                                 .frame(width: 12, height: 12)
                                 .position(tapLocation)
-                                .animation(.easeInOut(duration: 0.3), value: tapLocation)
+                                // REMOVED: .animation(.easeInOut(duration: 0.3), value: tapLocation)
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1031,7 +1050,7 @@ struct BackgroundSelectionOverlayView: View {
                                 .fill(Color.red)
                                 .frame(width: 12, height: 12)
                                 .position(tapLocation)
-                                .animation(.easeInOut(duration: 0.3), value: tapLocation)
+                                // REMOVED: .animation(.easeInOut(duration: 0.3), value: tapLocation)
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
