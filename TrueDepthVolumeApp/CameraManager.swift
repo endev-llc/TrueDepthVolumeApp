@@ -33,6 +33,9 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
     @Published var refinementMask: UIImage?
     @Published var refinementImageFrame: CGRect = .zero
     @Published var refinementDepthImageSize: CGSize = .zero
+    @Published var samManagerDepth = MobileSAMManager()
+    @Published var samManagerPhoto = MobileSAMManager()
+    @Published var isEncodingImages = false
     private var initialCroppedCSV: URL?
     
     var errorMessage = ""
@@ -569,6 +572,11 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
             self.capturedPhoto = nil
             self.hasOutline = false
             self.croppedFileToShare = nil
+            
+            // Reset SAM managers for new capture
+            self.samManagerDepth = MobileSAMManager()
+            self.samManagerPhoto = MobileSAMManager()
+            self.isEncodingImages = false
         }
         
         // Just trigger photo capture - depth will come with it
@@ -577,7 +585,6 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         
         self.photoOutput.capturePhoto(with: settings, delegate: self)
     }
-    
     private func processSimultaneousCapture() {
         guard let depthData = currentDepthData,
               let photoData = currentPhotoData else {
@@ -606,6 +613,12 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
             self.capturedDepthImage = depthImage
             self.capturedPhoto = photo
             self.isProcessing = false
+            
+            // START ENCODING IMMEDIATELY IN BACKGROUND
+            if let depthImage = depthImage {
+                let photoToEncode = photo ?? depthImage
+                self.startBackgroundEncoding(depthImage: depthImage, photoImage: photoToEncode)
+            }
         }
         
         // Clear temporary data
@@ -1843,5 +1856,28 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         print("   Removed points closer than \(minAllowedDepth)m (threshold: \(percentile25Depth)m - \(depthThreshold)m)")
         
         return filteredPoints
+    }
+    
+    // MARK: - Background Encoding
+    private func startBackgroundEncoding(depthImage: UIImage, photoImage: UIImage) {
+        print("🚀 Starting background encoding of images...")
+        isEncodingImages = true
+        
+        Task {
+            // Encode both images in parallel
+            async let depthEncodeTask = samManagerDepth.encodeImage(depthImage)
+            async let photoEncodeTask = samManagerPhoto.encodeImage(photoImage)
+            
+            let (depthSuccess, photoSuccess) = await (depthEncodeTask, photoEncodeTask)
+            
+            await MainActor.run {
+                isEncodingImages = false
+                if depthSuccess && photoSuccess {
+                    print("✅ Background encoding complete - images ready for segmentation!")
+                } else {
+                    print("⚠️ Background encoding had issues - Depth: \(depthSuccess), Photo: \(photoSuccess)")
+                }
+            }
+        }
     }
 }

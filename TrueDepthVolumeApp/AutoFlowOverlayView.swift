@@ -88,14 +88,14 @@ struct UnifiedSegmentOverlayView: View {
     @State private var photoOpacity: Double = 0.7
     @State private var imageFrame: CGRect = .zero
     
-    // Dual MobileSAM integration - one for depth (primary), one for photo (refinement)
-    @StateObject private var samManagerDepth = MobileSAMManager()
-    @StateObject private var samManagerPhoto = MobileSAMManager()
+    // USE CAMERA MANAGER'S SAM INSTANCES (already encoded in background)
+    @ObservedObject var samManagerDepth: MobileSAMManager
+    @ObservedObject var samManagerPhoto: MobileSAMManager
+    
     @State private var primaryMaskImage: UIImage?
     @State private var refinementMaskImage: UIImage?
     @State private var primaryMaskHistory: [UIImage] = []
     @State private var refinementMaskHistory: [UIImage] = []
-    // NEW: Store original uncolored masks for processing
     @State private var primaryOriginalMasks: [UIImage] = []
     @State private var refinementOriginalMasks: [UIImage] = []
     @State private var tapLocation: CGPoint = .zero
@@ -110,12 +110,23 @@ struct UnifiedSegmentOverlayView: View {
     @State private var currentDrawingPath: [CGPoint] = []
     @State private var isDrawing = false
     @State private var hasPenDrawnMasks = false
-    @State private var isDrawingPrimary = true // Toggle between primary and refinement pen drawing
+    @State private var isDrawingPrimary = true
     
     // Box drawing states
     @State private var boxStartPoint: CGPoint?
     @State private var boxCurrentPoint: CGPoint?
     @State private var isDrawingBox = false
+    
+    // Add initializer to accept SAM managers from parent
+    init(depthImage: UIImage, photo: UIImage?, cameraManager: CameraManager, onComplete: @escaping (URL?) -> Void, onDismiss: @escaping () -> Void) {
+        self.depthImage = depthImage
+        self.photo = photo
+        self.cameraManager = cameraManager
+        self.onComplete = onComplete
+        self.onDismiss = onDismiss
+        self.samManagerDepth = cameraManager.samManagerDepth
+        self.samManagerPhoto = cameraManager.samManagerPhoto
+    }
     
     var body: some View {
         ZStack {
@@ -445,16 +456,29 @@ struct UnifiedSegmentOverlayView: View {
         refinementOriginalMasks = []
         tapLocation = .zero
         showConfirmButton = false
+        hasPenDrawnMasks = false
+        
+        // Check if already encoded (from background encoding)
+        if samManagerDepth.currentImageEmbeddings != nil && samManagerPhoto.currentImageEmbeddings != nil {
+            print("✅ Images already encoded in background - ready immediately!")
+            isDepthEncoded = true
+            isPhotoEncoded = true
+            return
+        }
+        
+        // If not encoded yet, wait or encode now
+        print("⏳ Images not yet encoded, encoding now...")
         isDepthEncoded = false
         isPhotoEncoded = false
-        hasPenDrawnMasks = false
         
         let photoToSegment = photo ?? depthImage
         
         Task {
-            // Encode both images in parallel
-            async let depthEncodeTask = samManagerDepth.encodeImage(depthImage)
-            async let photoEncodeTask = samManagerPhoto.encodeImage(photoToSegment)
+            // Only encode if not already done
+            async let depthEncodeTask = samManagerDepth.currentImageEmbeddings == nil ?
+                samManagerDepth.encodeImage(depthImage) : true
+            async let photoEncodeTask = samManagerPhoto.currentImageEmbeddings == nil ?
+                samManagerPhoto.encodeImage(photoToSegment) : true
             
             let (depthSuccess, photoSuccess) = await (depthEncodeTask, photoEncodeTask)
             
@@ -817,9 +841,10 @@ struct BackgroundSelectionOverlayView: View {
     
     @State private var imageFrame: CGRect = .zero
     
-    // Dual MobileSAM integration - one for photo, one for depth
-    @StateObject private var samManagerPhoto = MobileSAMManager()
-    @StateObject private var samManagerDepth = MobileSAMManager()
+    // USE CAMERA MANAGER'S SAM INSTANCES (already encoded in background)
+    @ObservedObject var samManagerPhoto: MobileSAMManager
+    @ObservedObject var samManagerDepth: MobileSAMManager
+    
     @State private var maskImage: UIImage?
     @State private var maskHistory: [UIImage] = []
     @State private var tapLocation: CGPoint = .zero
@@ -838,6 +863,18 @@ struct BackgroundSelectionOverlayView: View {
     @State private var boxStartPoint: CGPoint?
     @State private var boxCurrentPoint: CGPoint?
     @State private var isDrawingBox = false
+    
+    // Add initializer to accept SAM managers from parent
+    init(depthImage: UIImage, photo: UIImage?, cameraManager: CameraManager, onBackgroundComplete: @escaping () -> Void, onSkip: @escaping () -> Void, onDismiss: @escaping () -> Void) {
+        self.depthImage = depthImage
+        self.photo = photo
+        self.cameraManager = cameraManager
+        self.onBackgroundComplete = onBackgroundComplete
+        self.onSkip = onSkip
+        self.onDismiss = onDismiss
+        self.samManagerPhoto = cameraManager.samManagerPhoto
+        self.samManagerDepth = cameraManager.samManagerDepth
+    }
     
     var body: some View {
         ZStack {
@@ -1128,15 +1165,28 @@ struct BackgroundSelectionOverlayView: View {
         maskHistory = []
         tapLocation = .zero
         showConfirmButton = false
+        
+        // Check if already encoded (from background encoding)
+        if samManagerDepth.currentImageEmbeddings != nil && samManagerPhoto.currentImageEmbeddings != nil {
+            print("✅ Images already encoded in background - ready immediately!")
+            isPhotoEncoded = true
+            isDepthEncoded = true
+            return
+        }
+        
+        // If not encoded yet, encode now
+        print("⏳ Images not yet encoded, encoding now...")
         isPhotoEncoded = false
         isDepthEncoded = false
         
         let photoToSegment = photo ?? depthImage
         
         Task {
-            // Encode both images in parallel
-            async let photoEncodeTask = samManagerPhoto.encodeImage(photoToSegment)
-            async let depthEncodeTask = samManagerDepth.encodeImage(depthImage)
+            // Only encode if not already done
+            async let photoEncodeTask = samManagerPhoto.currentImageEmbeddings == nil ?
+                samManagerPhoto.encodeImage(photoToSegment) : true
+            async let depthEncodeTask = samManagerDepth.currentImageEmbeddings == nil ?
+                samManagerDepth.encodeImage(depthImage) : true
             
             let (photoSuccess, depthSuccess) = await (photoEncodeTask, depthEncodeTask)
             
