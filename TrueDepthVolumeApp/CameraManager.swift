@@ -1135,7 +1135,7 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
     }
     
     // MARK: - Mask-based Cropping Function (Add this to CameraManager.swift)
-    func cropDepthDataWithMask(_ maskImage: UIImage, imageFrame: CGRect, depthImageSize: CGSize, skipExpansion: Bool = false) {
+    func cropDepthDataWithMask(_ maskImage: UIImage, imageFrame: CGRect, depthImageSize: CGSize, skipExpansion: Bool = false, completion: (() -> Void)? = nil) {
         
         // Conditionally apply expansion based on whether pen was used
         let finalMask: UIImage
@@ -1161,11 +1161,12 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         }
         
         if !uploadedCSVData.isEmpty {
-            cropUploadedCSVWithMask(finalMask, imageFrame: imageFrame, depthImageSize: depthImageSize)
+            cropUploadedCSVWithMask(finalMask, imageFrame: imageFrame, depthImageSize: depthImageSize, completion: completion)
         } else if let depthData = rawDepthData {
-            saveDepthDataToFileWithMask(depthData: depthData, maskImage: finalMask, imageFrame: imageFrame, depthImageSize: depthImageSize)
+            saveDepthDataToFileWithMask(depthData: depthData, maskImage: finalMask, imageFrame: imageFrame, depthImageSize: depthImageSize, completion: completion)
         } else {
             presentError("No depth data available for cropping.")
+            completion?()
             return
         }
         
@@ -1219,8 +1220,11 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         }
     }
 
-    private func cropUploadedCSVWithMask(_ maskImage: UIImage, imageFrame: CGRect, depthImageSize: CGSize) {
-        guard !uploadedCSVData.isEmpty else { return }
+    private func cropUploadedCSVWithMask(_ maskImage: UIImage, imageFrame: CGRect, depthImageSize: CGSize, completion: (() -> Void)? = nil) {
+        guard !uploadedCSVData.isEmpty else {
+            completion?()
+            return
+        }
         
         // Show processing indicator
         DispatchQueue.main.async {
@@ -1235,6 +1239,7 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
                 DispatchQueue.main.async {
                     self.presentError("Could not access Documents directory.")
                     self.isProcessing = false
+                    completion?()
                 }
                 return
             }
@@ -1296,18 +1301,20 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
                     self.lastSavedFileName = fileName
                     self.croppedFileToShare = fileURL
                     self.isProcessing = false
+                    completion?()
                 }
                 
             } catch {
                 DispatchQueue.main.async {
                     self.presentError("Failed to save masked CSV: \(error.localizedDescription)")
                     self.isProcessing = false
+                    completion?()
                 }
             }
         }
     }
 
-    private func saveDepthDataToFileWithMask(depthData: AVDepthData, maskImage: UIImage, imageFrame: CGRect, depthImageSize: CGSize) {
+    private func saveDepthDataToFileWithMask(depthData: AVDepthData, maskImage: UIImage, imageFrame: CGRect, depthImageSize: CGSize, completion: (() -> Void)? = nil) {
         let processedDepthData: AVDepthData
         
         if depthData.depthDataType == kCVPixelFormatType_DisparityFloat16 ||
@@ -1316,6 +1323,7 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
                 processedDepthData = try depthData.converting(toDepthDataType: kCVPixelFormatType_DepthFloat32)
             } catch {
                 self.presentError("Failed to convert disparity to depth: \(error.localizedDescription)")
+                completion?()
                 return
             }
         } else {
@@ -1323,6 +1331,7 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
                 processedDepthData = try depthData.converting(toDepthDataType: kCVPixelFormatType_DepthFloat32)
             } catch {
                 self.presentError("Failed to convert depth data format: \(error.localizedDescription)")
+                completion?()
                 return
             }
         }
@@ -1340,6 +1349,7 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
         
         guard let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
             self.presentError("Could not access Documents directory.")
+            completion?()
             return
         }
         
@@ -1388,10 +1398,12 @@ class CameraManager: NSObject, ObservableObject, AVCaptureDepthDataOutputDelegat
             DispatchQueue.main.async {
                 self.lastSavedFileName = fileName
                 self.croppedFileToShare = fileURL
+                completion?()
             }
             
         } catch {
             self.presentError("Failed to save masked depth data: \(error.localizedDescription)")
+            completion?()
         }
     }
 

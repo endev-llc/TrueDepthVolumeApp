@@ -801,10 +801,8 @@ struct UnifiedSegmentOverlayView: View {
         // First apply primary mask to get cropped CSV
         if let primaryMask = compositedPrimaryMask {
             print("📦 Applying primary mask...")
-            cameraManager.cropDepthDataWithMask(primaryMask, imageFrame: imageFrame, depthImageSize: depthImage.size, skipExpansion: hasPenDrawnMasks)
-            
-            // Wait for primary cropping to complete and CSV to be written
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            cameraManager.cropDepthDataWithMask(primaryMask, imageFrame: imageFrame, depthImageSize: depthImage.size, skipExpansion: hasPenDrawnMasks) {
+                // This runs when cropping is actually complete
                 if let primaryCSV = self.cameraManager.croppedFileToShare {
                     print("✅ Primary CSV created: \(primaryCSV.lastPathComponent)")
                     
@@ -818,12 +816,9 @@ struct UnifiedSegmentOverlayView: View {
                             primaryCroppedCSV: primaryCSV,
                             skipExpansion: self.hasPenDrawnMasks
                         )
-                        
-                        // Wait for refinement to complete
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                            print("✅ Refinement complete")
-                            self.onComplete(self.cameraManager.croppedFileToShare)
-                        }
+                        // refineWithSecondaryMask is synchronous, so we can call completion immediately
+                        print("✅ Refinement complete")
+                        self.onComplete(self.cameraManager.croppedFileToShare)
                     } else {
                         // No refinement mask, just complete with primary
                         print("ℹ️ No refinement mask - completing with primary only")
@@ -831,16 +826,13 @@ struct UnifiedSegmentOverlayView: View {
                     }
                 } else {
                     print("❌ ERROR: Primary CSV not created!")
-                    // Fallback - complete anyway
                     self.onComplete(self.cameraManager.croppedFileToShare)
                 }
             }
         } else if let refinementMask = compositedRefinementMask {
             // Only refinement mask exists (unlikely but handle it)
             print("⚠️ Only refinement mask exists - treating as primary")
-            cameraManager.cropDepthDataWithMask(refinementMask, imageFrame: imageFrame, depthImageSize: depthImage.size, skipExpansion: hasPenDrawnMasks)
-            
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            cameraManager.cropDepthDataWithMask(refinementMask, imageFrame: imageFrame, depthImageSize: depthImage.size, skipExpansion: hasPenDrawnMasks) {
                 self.onComplete(self.cameraManager.croppedFileToShare)
             }
         } else {
