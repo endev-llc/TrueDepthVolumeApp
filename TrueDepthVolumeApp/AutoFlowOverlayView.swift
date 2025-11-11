@@ -115,8 +115,6 @@ struct UnifiedSegmentOverlayView: View {
     @State private var refinementMaskImage: UIImage?
     @State private var primaryMaskHistory: [UIImage] = []
     @State private var refinementMaskHistory: [UIImage] = []
-    @State private var primaryOriginalMasks: [UIImage] = []
-    @State private var refinementOriginalMasks: [UIImage] = []
     @State private var tapLocation: CGPoint = .zero
     @State private var imageDisplaySize: CGSize = .zero
     @State private var isDepthEncoded = false
@@ -319,7 +317,6 @@ struct UnifiedSegmentOverlayView: View {
                                 .fill(Color.red)
                                 .frame(width: 12, height: 12)
                                 .position(tapLocation)
-                                // REMOVED: .animation(.easeInOut(duration: 0.3), value: tapLocation)
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -465,14 +462,33 @@ struct UnifiedSegmentOverlayView: View {
         return points
     }
     
+    // MARK: - Display Update Function
+    private func updateDisplayMasks() {
+        // Composite and color primary masks (blue) for display
+        if !primaryMaskHistory.isEmpty {
+            if let composited = recompositeMaskHistory(primaryMaskHistory) {
+                self.primaryMaskImage = colorMask(composited, with: UIColor(red: 0/255, green: 122/255, blue: 255/255, alpha: 1.0))
+            }
+        } else {
+            self.primaryMaskImage = nil
+        }
+        
+        // Composite and color refinement masks (yellow) for display
+        if !refinementMaskHistory.isEmpty {
+            if let composited = recompositeMaskHistory(refinementMaskHistory) {
+                self.refinementMaskImage = colorMask(composited, with: UIColor(red: 255/255, green: 204/255, blue: 0/255, alpha: 1.0))
+            }
+        } else {
+            self.refinementMaskImage = nil
+        }
+    }
+    
     // MARK: - Unified Segmentation Functions
     private func startUnifiedSegmentation() {
         primaryMaskImage = nil
         refinementMaskImage = nil
         primaryMaskHistory = []
         refinementMaskHistory = []
-        primaryOriginalMasks = []
-        refinementOriginalMasks = []
         tapLocation = .zero
         showConfirmButton = false
         hasPenDrawnMasks = false
@@ -527,29 +543,17 @@ struct UnifiedSegmentOverlayView: View {
             let (depthMask, photoMask) = await (depthMaskTask, photoMaskTask)
             
             await MainActor.run {
-                // Add primary mask (from depth) in blue
+                // Store raw masks from SAM (no coloring yet)
                 if let depthMask = depthMask {
-                    // Store original mask with brown color for processing
-                    let originalMask = colorMask(depthMask, with: UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 1.0))
-                    primaryOriginalMasks.append(originalMask)
-                    
-                    // Create colored version for display
-                    let coloredDepthMask = colorMask(depthMask, with: UIColor(red: 0/255, green: 122/255, blue: 255/255, alpha: 1.0))
-                    primaryMaskHistory.append(coloredDepthMask)
-                    self.primaryMaskImage = recompositeMaskHistory(primaryMaskHistory)
+                    primaryMaskHistory.append(depthMask)
                 }
                 
-                // Add refinement mask (from photo) in yellow
                 if let photoMask = photoMask {
-                    // Store original mask with brown color for processing
-                    let originalMask = colorMask(photoMask, with: UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 1.0))
-                    refinementOriginalMasks.append(originalMask)
-                    
-                    // Create colored version for display
-                    let coloredPhotoMask = colorMask(photoMask, with: UIColor(red: 255/255, green: 204/255, blue: 0/255, alpha: 1.0))
-                    refinementMaskHistory.append(coloredPhotoMask)
-                    self.refinementMaskImage = recompositeMaskHistory(refinementMaskHistory)
+                    refinementMaskHistory.append(photoMask)
                 }
+                
+                // Update display versions ONCE
+                updateDisplayMasks()
                 
                 if depthMask != nil || photoMask != nil {
                     self.showConfirmButton = true
@@ -567,29 +571,19 @@ struct UnifiedSegmentOverlayView: View {
         
         let targetImage = isDrawingPrimary ? depthImage : (photo ?? depthImage)
         
-        // Create original mask with brown color for processing
-        let originalColor = UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 1.0)
-        if let originalMask = createMaskFromPath(currentDrawingPath, brushSize: brushSize, in: imageFrame, imageSize: targetImage.size, color: originalColor) {
+        // Create mask ONCE in white/grayscale (we'll color it later)
+        let whiteColor = UIColor.white
+        if let mask = createMaskFromPath(currentDrawingPath, brushSize: brushSize, in: imageFrame, imageSize: targetImage.size, color: whiteColor) {
             
-            // Create display color mask
-            let displayColor = isDrawingPrimary ?
-                UIColor(red: 0/255, green: 122/255, blue: 255/255, alpha: 1.0) :
-                UIColor(red: 255/255, green: 204/255, blue: 0/255, alpha: 1.0)
-            
-            if let displayMask = createMaskFromPath(currentDrawingPath, brushSize: brushSize, in: imageFrame, imageSize: targetImage.size, color: displayColor) {
-                
-                if isDrawingPrimary {
-                    primaryOriginalMasks.append(originalMask)
-                    primaryMaskHistory.append(displayMask)
-                    primaryMaskImage = recompositeMaskHistory(primaryMaskHistory)
-                } else {
-                    refinementOriginalMasks.append(originalMask)
-                    refinementMaskHistory.append(displayMask)
-                    refinementMaskImage = recompositeMaskHistory(refinementMaskHistory)
-                }
-                showConfirmButton = true
-                hasPenDrawnMasks = true
+            if isDrawingPrimary {
+                primaryMaskHistory.append(mask)
+            } else {
+                refinementMaskHistory.append(mask)
             }
+            
+            updateDisplayMasks()
+            showConfirmButton = true
+            hasPenDrawnMasks = true
         }
         
         currentDrawingPath = []
@@ -627,25 +621,16 @@ struct UnifiedSegmentOverlayView: View {
             let (depthMask, photoMask) = await (depthMaskTask, photoMaskTask)
             
             await MainActor.run {
-                // Add primary mask (from depth) in blue
+                // Store raw masks (no coloring yet)
                 if let depthMask = depthMask {
-                    let originalMask = colorMask(depthMask, with: UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 1.0))
-                    primaryOriginalMasks.append(originalMask)
-                    
-                    let coloredDepthMask = colorMask(depthMask, with: UIColor(red: 0/255, green: 122/255, blue: 255/255, alpha: 1.0))
-                    primaryMaskHistory.append(coloredDepthMask)
-                    self.primaryMaskImage = recompositeMaskHistory(primaryMaskHistory)
+                    primaryMaskHistory.append(depthMask)
                 }
                 
-                // Add refinement mask (from photo) in yellow
                 if let photoMask = photoMask {
-                    let originalMask = colorMask(photoMask, with: UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 1.0))
-                    refinementOriginalMasks.append(originalMask)
-                    
-                    let coloredPhotoMask = colorMask(photoMask, with: UIColor(red: 255/255, green: 204/255, blue: 0/255, alpha: 1.0))
-                    refinementMaskHistory.append(coloredPhotoMask)
-                    self.refinementMaskImage = recompositeMaskHistory(refinementMaskHistory)
+                    refinementMaskHistory.append(photoMask)
                 }
+                
+                updateDisplayMasks()
                 
                 if depthMask != nil || photoMask != nil {
                     self.showConfirmButton = true
@@ -760,13 +745,11 @@ struct UnifiedSegmentOverlayView: View {
         // Prioritize undoing refinement masks first, then primary
         if !refinementMaskHistory.isEmpty {
             refinementMaskHistory.removeLast()
-            refinementOriginalMasks.removeLast()
-            refinementMaskImage = recompositeMaskHistory(refinementMaskHistory)
         } else if !primaryMaskHistory.isEmpty {
             primaryMaskHistory.removeLast()
-            primaryOriginalMasks.removeLast()
-            primaryMaskImage = recompositeMaskHistory(primaryMaskHistory)
         }
+        
+        updateDisplayMasks()
         
         if primaryMaskHistory.isEmpty && refinementMaskHistory.isEmpty {
             showConfirmButton = false
@@ -777,8 +760,6 @@ struct UnifiedSegmentOverlayView: View {
     private func clearAllMasks() {
         primaryMaskHistory = []
         refinementMaskHistory = []
-        primaryOriginalMasks = []
-        refinementOriginalMasks = []
         primaryMaskImage = nil
         refinementMaskImage = nil
         tapLocation = .zero
@@ -787,9 +768,28 @@ struct UnifiedSegmentOverlayView: View {
     }
     
     private func applyMasks() {
-        // Use original brown-colored masks for processing
-        let compositedPrimaryMask = recompositeMaskHistory(primaryOriginalMasks)
-        let compositedRefinementMask = recompositeMaskHistory(refinementOriginalMasks)
+        // Composite and color brown for processing (done only once here)
+        let compositedPrimaryMask: UIImage?
+        if !primaryMaskHistory.isEmpty {
+            if let composited = recompositeMaskHistory(primaryMaskHistory) {
+                compositedPrimaryMask = colorMask(composited, with: UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 1.0))
+            } else {
+                compositedPrimaryMask = nil
+            }
+        } else {
+            compositedPrimaryMask = nil
+        }
+        
+        let compositedRefinementMask: UIImage?
+        if !refinementMaskHistory.isEmpty {
+            if let composited = recompositeMaskHistory(refinementMaskHistory) {
+                compositedRefinementMask = colorMask(composited, with: UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 1.0))
+            } else {
+                compositedRefinementMask = nil
+            }
+        } else {
+            compositedRefinementMask = nil
+        }
         
         // STORE REFINEMENT MASK FOR BACKGROUND EXCLUSION:
         cameraManager.refinementMaskForBackground = compositedRefinementMask
