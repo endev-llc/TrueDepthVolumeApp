@@ -865,6 +865,7 @@ struct BackgroundSelectionOverlayView: View {
     @State private var isPhotoEncoded = false
     @State private var isDepthEncoded = false
     @State private var showConfirmButton = false
+    @State private var photoOpacity: Double = 1.0
     
     // Pen drawing states
     @State private var isPenMode = false
@@ -974,43 +975,46 @@ struct BackgroundSelectionOverlayView: View {
                     .padding(.horizontal, 50)
                 }
                 
+                // Opacity slider (only show if photo exists and not in pen mode)
+                if photo != nil && !isPenMode {
+                    HStack {
+                        Image(systemName: "photo")
+                            .foregroundColor(.white)
+                        Slider(value: $photoOpacity, in: 0...1)
+                            .accentColor(.blue)
+                        Text("\(Int(photoOpacity * 100))%")
+                            .foregroundColor(.white)
+                    }
+                    .padding(.horizontal, 50)
+                }
+                
                 Spacer()
                 
                 // Image overlay with proper coordinate space
                 GeometryReader { geometry in
                     ZStack {
-                        // Show photo (visual image)
+                        // Depth image (bottom layer)
+                        Image(uiImage: depthImage)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .overlay(
+                                GeometryReader { imageGeometry in
+                                    Color.clear
+                                        .onAppear {
+                                            updateImageFrame(imageGeometry: imageGeometry)
+                                        }
+                                        .onChange(of: imageGeometry.size) { _, _ in
+                                            updateImageFrame(imageGeometry: imageGeometry)
+                                        }
+                                }
+                            )
+                        
+                        // Photo (top layer with opacity)
                         if let photo = photo {
                             Image(uiImage: photo)
                                 .resizable()
                                 .aspectRatio(contentMode: .fit)
-                                .overlay(
-                                    GeometryReader { imageGeometry in
-                                        Color.clear
-                                            .onAppear {
-                                                updateImageFrame(imageGeometry: imageGeometry)
-                                            }
-                                            .onChange(of: imageGeometry.size) { _, _ in
-                                                updateImageFrame(imageGeometry: imageGeometry)
-                                            }
-                                    }
-                                )
-                        } else {
-                            // Fallback to depth image if no photo
-                            Image(uiImage: depthImage)
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .overlay(
-                                    GeometryReader { imageGeometry in
-                                        Color.clear
-                                            .onAppear {
-                                                updateImageFrame(imageGeometry: imageGeometry)
-                                            }
-                                            .onChange(of: imageGeometry.size) { _, _ in
-                                                updateImageFrame(imageGeometry: imageGeometry)
-                                            }
-                                    }
-                                )
+                                .opacity(photoOpacity)
                         }
                         
                         // MobileSAM mask overlay (intersection of photo and depth masks)
