@@ -853,6 +853,82 @@ struct UnifiedSegmentOverlayView: View {
             print("❌ ERROR: No masks to apply!")
         }
     }
+    
+    // MARK: - Composite Two Masks (Union Operation)
+    private func compositeMasks(_ mask1: UIImage, with mask2: UIImage) -> UIImage {
+        guard let cgImage1 = mask1.cgImage,
+              let cgImage2 = mask2.cgImage else {
+            return mask1
+        }
+        
+        // Use the size of the first mask
+        let width = cgImage1.width
+        let height = cgImage1.height
+        
+        // Extract pixel data from both masks
+        var data1 = [UInt8](repeating: 0, count: width * height * 4)
+        var data2 = [UInt8](repeating: 0, count: width * height * 4)
+        
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        
+        guard let context1 = CGContext(
+            data: &data1,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let context2 = CGContext(
+            data: &data2,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return mask1
+        }
+        
+        // Draw both masks (mask2 might be different size, so scale it)
+        context1.draw(cgImage1, in: CGRect(x: 0, y: 0, width: width, height: height))
+        context2.draw(cgImage2, in: CGRect(x: 0, y: 0, width: width, height: height))
+        
+        // Create composited mask data (union of both masks - white pixels)
+        var compositedData = [UInt8](repeating: 0, count: width * height * 4)
+        
+        for i in 0..<(width * height) {
+            let index = i * 4
+            // A pixel is included if it's in either mask (union operation)
+            let inMask1 = data1[index] > 128
+            let inMask2 = data2[index] > 128
+            
+            if inMask1 || inMask2 {
+                // Keep white (grayscale mask - color will be applied later)
+                compositedData[index] = 255     // R
+                compositedData[index + 1] = 255 // G
+                compositedData[index + 2] = 255 // B
+                compositedData[index + 3] = 255 // A
+            }
+            // else remains black (0,0,0,0)
+        }
+        
+        // Create CGImage from composited data
+        guard let compositedContext = CGContext(
+            data: &compositedData,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let compositedCGImage = compositedContext.makeImage() else {
+            return mask1
+        }
+        
+        return UIImage(cgImage: compositedCGImage, scale: mask1.scale, orientation: mask1.imageOrientation)
+    }
 }
 
 // MARK: - Background Selection Overlay View (UPDATED FOR DUAL-MASK INTERSECTION)
@@ -1725,6 +1801,74 @@ struct BackgroundSelectionOverlayView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             onBackgroundComplete()
         }
+    }
+    
+    private func compositeMasks(_ mask1: UIImage, with mask2: UIImage) -> UIImage {
+        guard let cgImage1 = mask1.cgImage,
+              let cgImage2 = mask2.cgImage else {
+            return mask1
+        }
+        
+        let width = cgImage1.width
+        let height = cgImage1.height
+        
+        var data1 = [UInt8](repeating: 0, count: width * height * 4)
+        var data2 = [UInt8](repeating: 0, count: width * height * 4)
+        
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        
+        guard let context1 = CGContext(
+            data: &data1,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let context2 = CGContext(
+            data: &data2,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return mask1
+        }
+        
+        context1.draw(cgImage1, in: CGRect(x: 0, y: 0, width: width, height: height))
+        context2.draw(cgImage2, in: CGRect(x: 0, y: 0, width: width, height: height))
+        
+        var compositedData = [UInt8](repeating: 0, count: width * height * 4)
+        
+        for i in 0..<(width * height) {
+            let index = i * 4
+            let inMask1 = data1[index] > 128
+            let inMask2 = data2[index] > 128
+            
+            if inMask1 || inMask2 {
+                // Preserve brown color (139, 69, 19) instead of white
+                compositedData[index] = 139     // R - brown
+                compositedData[index + 1] = 69  // G - brown
+                compositedData[index + 2] = 19  // B - brown
+                compositedData[index + 3] = 255 // A
+            }
+        }
+        
+        guard let compositedContext = CGContext(
+            data: &compositedData,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let compositedCGImage = compositedContext.makeImage() else {
+            return mask1
+        }
+        
+        return UIImage(cgImage: compositedCGImage, scale: mask1.scale, orientation: mask1.imageOrientation)
     }
 }
 
