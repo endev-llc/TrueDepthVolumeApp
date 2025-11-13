@@ -104,7 +104,7 @@ struct UnifiedSegmentOverlayView: View {
     let onComplete: (URL?) -> Void
     let onDismiss: () -> Void
     
-    @State private var photoOpacity: Double = 0.7
+    @State private var photoOpacity: Double = 1.0
     @State private var imageFrame: CGRect = .zero
     
     // USE CAMERA MANAGER'S SAM INSTANCES (already encoded in background)
@@ -281,13 +281,15 @@ struct UnifiedSegmentOverlayView: View {
                             Image(uiImage: mask)
                                 .resizable()
                                 .aspectRatio(contentMode: .fit)
+                                .opacity(1.0 - photoOpacity)
                         }
-                        
+
                         // Refinement mask overlay (yellow tint)
                         if let mask = refinementMaskImage {
                             Image(uiImage: mask)
                                 .resizable()
                                 .aspectRatio(contentMode: .fit)
+                                .opacity(photoOpacity)
                         }
                         
                         // Drawing overlay (for pen mode)
