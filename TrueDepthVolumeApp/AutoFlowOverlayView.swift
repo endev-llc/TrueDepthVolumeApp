@@ -120,6 +120,7 @@ struct UnifiedSegmentOverlayView: View {
     @State private var isDepthEncoded = false
     @State private var isPhotoEncoded = false
     @State private var showConfirmButton = false
+    @State private var maskOrder: [String] = [] // Tracks order: "primary" or "refinement"
     
     // Pen drawing states
     @State private var isPenMode = false
@@ -491,6 +492,7 @@ struct UnifiedSegmentOverlayView: View {
         refinementMaskImage = nil
         primaryMaskHistory = []
         refinementMaskHistory = []
+        maskOrder = []
         tapLocation = .zero
         showConfirmButton = false
         hasPenDrawnMasks = false
@@ -548,10 +550,12 @@ struct UnifiedSegmentOverlayView: View {
                 // Store raw masks from SAM (no coloring yet)
                 if let depthMask = depthMask {
                     primaryMaskHistory.append(depthMask)
+                    maskOrder.append("primary") // Add this line
                 }
                 
                 if let photoMask = photoMask {
                     refinementMaskHistory.append(photoMask)
+                    maskOrder.append("refinement") // Add this line
                 }
                 
                 // Update display versions ONCE
@@ -579,8 +583,10 @@ struct UnifiedSegmentOverlayView: View {
             
             if isDrawingPrimary {
                 primaryMaskHistory.append(mask)
+                maskOrder.append("primary")
             } else {
                 refinementMaskHistory.append(mask)
+                maskOrder.append("refinement")
             }
             
             updateDisplayMasks()
@@ -626,10 +632,12 @@ struct UnifiedSegmentOverlayView: View {
                 // Store raw masks (no coloring yet)
                 if let depthMask = depthMask {
                     primaryMaskHistory.append(depthMask)
+                    maskOrder.append("primary")
                 }
                 
                 if let photoMask = photoMask {
                     refinementMaskHistory.append(photoMask)
+                    maskOrder.append("refinement")
                 }
                 
                 updateDisplayMasks()
@@ -744,10 +752,13 @@ struct UnifiedSegmentOverlayView: View {
     }
     
     private func undoLastMask() {
-        // Prioritize undoing refinement masks first, then primary
-        if !refinementMaskHistory.isEmpty {
+        guard !maskOrder.isEmpty else { return }
+        
+        let lastMaskType = maskOrder.removeLast()
+        
+        if lastMaskType == "refinement" && !refinementMaskHistory.isEmpty {
             refinementMaskHistory.removeLast()
-        } else if !primaryMaskHistory.isEmpty {
+        } else if lastMaskType == "primary" && !primaryMaskHistory.isEmpty {
             primaryMaskHistory.removeLast()
         }
         
@@ -767,6 +778,7 @@ struct UnifiedSegmentOverlayView: View {
         tapLocation = .zero
         showConfirmButton = false
         hasPenDrawnMasks = false
+        maskOrder = [] // Add this line
     }
     
     private func applyMasks() {
