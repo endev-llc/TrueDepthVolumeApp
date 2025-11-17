@@ -614,6 +614,9 @@ struct DepthVisualization3DView: View {
         let (primaryVoxelGeometry, primaryVolumeInfo) = createVoxelGeometry(from: primaryMeasurementPoints3D, refinementMask: refinementMeasurementPoints3D, backgroundPoints: centeredBackgroundPointsForPlane)
         timer.lap("Created voxel geometry")
         
+        // Get the bounding box *from the final voxel geometry*
+        let voxelBBox = primaryVoxelGeometry.boundingBox
+        
         let primaryVoxelNodeInstance = SCNNode(geometry: primaryVoxelGeometry)
         
         // Create bounding box
@@ -660,7 +663,10 @@ struct DepthVisualization3DView: View {
         }
         
         setupLighting(scene: scene)
-        setupCamera(scene: scene, pointCloud: primaryMeasurementPoints3D)
+        
+        // Pass the new voxelBBox to setupCamera instead of the original point cloud
+        setupCamera(scene: scene, boundingBox: (min: voxelBBox.min, max: voxelBBox.max))
+        
         timer.lap("Setup lighting and camera")
         
         return scene
@@ -1696,33 +1702,59 @@ struct DepthVisualization3DView: View {
         scene.rootNode.addChildNode(secondaryLightNode)
     }
     
-    private func setupCamera(scene: SCNScene, pointCloud: [SCNVector3]) {
-        let camera = SCNCamera()
-        camera.automaticallyAdjustsZRange = true
-        camera.zNear = 0.001
-        camera.zFar = 100.0
-        let cameraNode = SCNNode()
-        cameraNode.camera = camera
-        
-        if !pointCloud.isEmpty {
-            let bbox = calculateBoundingBox(pointCloud)
-            let size = SCNVector3(
-                bbox.max.x - bbox.min.x,
-                bbox.max.y - bbox.min.y,
-                bbox.max.z - bbox.min.z
-            )
-            let maxDim = Swift.max(size.x, Swift.max(size.y, size.z))
-            let distance = maxDim * 3.0
+    // Modified function to accept a bounding box tuple
+        private func setupCamera(scene: SCNScene, boundingBox: (min: SCNVector3, max: SCNVector3)) {
+            let camera = SCNCamera()
+            camera.automaticallyAdjustsZRange = true
+            camera.zNear = 0.001
+            camera.zFar = 100.0
+            let cameraNode = SCNNode()
+            cameraNode.camera = camera
             
-            cameraNode.position = SCNVector3(distance, distance * 0.5, distance)
-            cameraNode.look(at: SCNVector3(0, 0, 0))
-        } else {
-            cameraNode.position = SCNVector3(0.5, 0.5, 0.5)
-            cameraNode.look(at: SCNVector3(0, 0, 0))
+            let bbox = boundingBox
+            
+            // Check if the bounding box is valid (i.e., has volume)
+            if bbox.min.x < bbox.max.x || bbox.min.y < bbox.max.y || bbox.min.z < bbox.max.z {
+                // Calculate size from the new voxel bounding box
+                let size = SCNVector3(
+                    bbox.max.x - bbox.min.x,
+                    bbox.max.y - bbox.min.y,
+                    bbox.max.z - bbox.min.z
+                )
+                let maxDim = Swift.max(size.x, Swift.max(size.y, size.z))
+                // Make distance relative to maxDim, or a small default if maxDim is zero
+                let distance = maxDim > 0 ? maxDim * 3.0 : 1.0
+                
+                // Calculate the center *of the voxel bounding box*
+                let center = SCNVector3(
+                    (bbox.min.x + bbox.max.x) / 2.0,
+                    (bbox.min.y + bbox.max.y) / 2.0,
+                    (bbox.min.z + bbox.max.z) / 2.0
+                )
+                
+                // Position camera "in front" (negative Z) and "above" (negative Y)
+                let cameraX = center.x
+                let cameraY = center.y - distance * 0.1 // Flipped from positive to negative
+                let cameraZ = center.z - distance       // Flipped from positive to negative
+
+                cameraNode.position = SCNVector3(cameraX, cameraY, cameraZ)
+
+                // Tell the camera that the "up" direction for the view should be the NEGATIVE X-axis (-1, 0, 0).
+                // This rotates the camera in the opposite 90-degree direction.
+                cameraNode.look(
+                    at: center,
+                    up: SCNVector3(-1, 0, 0), // Flipped from 1 to -1
+                    localFront: SCNVector3(0, 0, -1)
+                )
+                
+            } else {
+                // Fallback (same as original)
+                cameraNode.position = SCNVector3(0.5, 0.5, 0.5)
+                cameraNode.look(at: SCNVector3(0, 0, 0))
+            }
+            
+            scene.rootNode.addChildNode(cameraNode)
         }
-        
-        scene.rootNode.addChildNode(cameraNode)
-    }
 }
 
 // MARK: - Helper Structs for Optimization
