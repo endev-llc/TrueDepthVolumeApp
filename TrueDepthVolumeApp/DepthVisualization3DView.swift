@@ -620,8 +620,7 @@ struct DepthVisualization3DView: View {
         let primaryVoxelNodeInstance = SCNNode(geometry: primaryVoxelGeometry)
         
         // Create bounding box
-        let bboxGeometry = createBoundingBoxGeometry(min: SCNVector3(combinedBbox.min.x - center.x, combinedBbox.min.y - center.y, combinedBbox.min.z - center.z),
-                                                      max: SCNVector3(combinedBbox.max.x - center.x, combinedBbox.max.y - center.y, combinedBbox.max.z - center.z))
+        let bboxGeometry = createBoundingBoxGeometry(min: voxelBBox.min, max: voxelBBox.max)
         let boundingBoxNodeInstance = SCNNode(geometry: bboxGeometry)
         
         // Update UI
@@ -662,7 +661,7 @@ struct DepthVisualization3DView: View {
             timer.lap("Created refinement geometry")
         }
         
-        setupLighting(scene: scene)
+        setupLighting(scene: scene, boundingBox: (min: voxelBBox.min, max: voxelBBox.max), center: center)
         
         // Pass the new voxelBBox to setupCamera instead of the original point cloud
         setupCamera(scene: scene, boundingBox: (min: voxelBBox.min, max: voxelBBox.max))
@@ -1672,7 +1671,7 @@ struct DepthVisualization3DView: View {
         }
     }
     
-    private func setupLighting(scene: SCNScene) {
+    private func setupLighting(scene: SCNScene, boundingBox: (min: SCNVector3, max: SCNVector3), center: SCNVector3) {
         let ambientLight = SCNLight()
         ambientLight.type = .ambient
         ambientLight.color = UIColor.white
@@ -1681,14 +1680,28 @@ struct DepthVisualization3DView: View {
         ambientNode.light = ambientLight
         scene.rootNode.addChildNode(ambientNode)
         
+        // Calculate camera/light position using same logic as setupCamera
+        let bbox = boundingBox
+        let size = SCNVector3(
+            bbox.max.x - bbox.min.x,
+            bbox.max.y - bbox.min.y,
+            bbox.max.z - bbox.min.z
+        )
+        let maxDim = Swift.max(size.x, Swift.max(size.y, size.z))
+        let distance = maxDim > 0 ? maxDim * 3.0 : 1.0
+        
+        let lightX = center.x
+        let lightY = center.y - distance * 0.1
+        let lightZ = center.z - distance
+        
         let directionalLight = SCNLight()
         directionalLight.type = .directional
         directionalLight.color = UIColor.white
         directionalLight.intensity = 600
         let lightNode = SCNNode()
         lightNode.light = directionalLight
-        lightNode.position = SCNVector3(10, 15, 10)
-        lightNode.look(at: SCNVector3(0, 0, 0))
+        lightNode.position = SCNVector3(lightX, lightY, lightZ)
+        lightNode.look(at: center)
         scene.rootNode.addChildNode(lightNode)
         
         let secondaryLight = SCNLight()
@@ -1698,7 +1711,7 @@ struct DepthVisualization3DView: View {
         let secondaryLightNode = SCNNode()
         secondaryLightNode.light = secondaryLight
         secondaryLightNode.position = SCNVector3(-10, 10, -10)
-        secondaryLightNode.look(at: SCNVector3(0, 0, 0))
+        secondaryLightNode.look(at: center)
         scene.rootNode.addChildNode(secondaryLightNode)
     }
     
@@ -1734,7 +1747,7 @@ struct DepthVisualization3DView: View {
                 
                 // Position camera "in front" (negative Z) and "above" (negative Y)
                 let cameraX = center.x
-                let cameraY = center.y - distance * 0.1 // Flipped from positive to negative
+                let cameraY = center.y - distance * 0.1 // this 0.1 var controls the tilt of the voxels
                 let cameraZ = center.z - distance       // Flipped from positive to negative
 
                 cameraNode.position = SCNVector3(cameraX, cameraY, cameraZ)
