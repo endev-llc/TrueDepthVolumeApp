@@ -1998,9 +1998,7 @@ struct BackgroundSelectionOverlayView: View {
         // Extract background surface points from depth data using the intersected mask
         cameraManager.extractBackgroundSurfacePoints(maskImage, imageFrame: imageFrame, depthImageSize: depthImage.size)
         
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            onBackgroundComplete()
-        }
+        onBackgroundComplete()
     }
     
     private func compositeMasks(_ mask1: UIImage, with mask2: UIImage) -> UIImage {
