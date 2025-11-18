@@ -781,6 +781,150 @@ struct UnifiedSegmentOverlayView: View {
         maskOrder = [] // Add this line
     }
     
+    // MARK: - Expand Primary Mask to Include Refinement
+    private func expandPrimaryMaskToIncludeRefinement(_ primaryMask: UIImage, _ refinementMask: UIImage) -> UIImage? {
+        guard let primaryCGImage = primaryMask.cgImage,
+              let refinementCGImage = refinementMask.cgImage else {
+            return primaryMask
+        }
+        
+        let width = primaryCGImage.width
+        let height = primaryCGImage.height
+        
+        // Resize refinement mask if dimensions don't match
+        let resizedRefinementMask: UIImage
+        if refinementCGImage.width != width || refinementCGImage.height != height {
+            resizedRefinementMask = resizeMaskEfficiently(refinementMask, to: CGSize(width: width, height: height)) ?? refinementMask
+        } else {
+            resizedRefinementMask = refinementMask
+        }
+        
+        guard let resizedRefinementCGImage = resizedRefinementMask.cgImage else {
+            return primaryMask
+        }
+        
+        // Extract pixel data
+        var primaryData = [UInt8](repeating: 0, count: width * height * 4)
+        var refinementData = [UInt8](repeating: 0, count: width * height * 4)
+        
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        
+        guard let primaryContext = CGContext(
+            data: &primaryData,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let refinementContext = CGContext(
+            data: &refinementData,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return primaryMask
+        }
+        
+        primaryContext.draw(primaryCGImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        refinementContext.draw(resizedRefinementCGImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        
+        // Check if expansion is needed
+        var needsExpansion = false
+        for i in 0..<(width * height) {
+            let index = i * 4
+            let primaryMasked = primaryData[index] > 128
+            let refinementMasked = refinementData[index] > 128
+            
+            if refinementMasked && !primaryMasked {
+                needsExpansion = true
+                break
+            }
+        }
+        
+        // Only expand if needed
+        guard needsExpansion else {
+            print("✅ Primary mask already covers all refinement pixels - no expansion needed")
+            return primaryMask
+        }
+        
+        print("🔄 Expanding primary mask to include all refinement pixels...")
+        
+        // Create expanded mask - union of both masks
+        var expandedData = [UInt8](repeating: 0, count: width * height * 4)
+        var addedPixels = 0
+        
+        for i in 0..<(width * height) {
+            let index = i * 4
+            let primaryMasked = primaryData[index] > 128
+            let refinementMasked = refinementData[index] > 128
+            
+            if primaryMasked || refinementMasked {
+                expandedData[index] = 139     // R - brown
+                expandedData[index + 1] = 69  // G - brown
+                expandedData[index + 2] = 19  // B - brown
+                expandedData[index + 3] = 255 // A
+                
+                if !primaryMasked && refinementMasked {
+                    addedPixels += 1
+                }
+            }
+        }
+        
+        print("   Added \(addedPixels) pixels to primary mask to ensure full coverage")
+        
+        // Create result image
+        guard let expandedContext = CGContext(
+            data: &expandedData,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let expandedCGImage = expandedContext.makeImage() else {
+            return primaryMask
+        }
+        
+        return UIImage(cgImage: expandedCGImage, scale: primaryMask.scale, orientation: primaryMask.imageOrientation)
+    }
+
+    private func resizeMaskEfficiently(_ image: UIImage, to targetSize: CGSize) -> UIImage? {
+        let width = Int(targetSize.width)
+        let height = Int(targetSize.height)
+        
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
+        
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo.rawValue
+        ) else {
+            return nil
+        }
+        
+        context.interpolationQuality = .high
+        
+        if let cgImage = image.cgImage {
+            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        }
+        
+        guard let scaledCGImage = context.makeImage() else {
+            return nil
+        }
+        
+        return UIImage(cgImage: scaledCGImage, scale: 1.0, orientation: image.imageOrientation)
+    }
+
+    
     private func applyMasks() {
         // Composite and color brown for processing (done only once here)
         let compositedPrimaryMask: UIImage?
@@ -805,15 +949,23 @@ struct UnifiedSegmentOverlayView: View {
             compositedRefinementMask = nil
         }
         
+        // EXPAND PRIMARY MASK TO INCLUDE ALL REFINEMENT PIXELS (if needed)
+        let finalPrimaryMask: UIImage?
+        if let primaryMask = compositedPrimaryMask, let refinementMask = compositedRefinementMask {
+            finalPrimaryMask = expandPrimaryMaskToIncludeRefinement(primaryMask, refinementMask)
+        } else {
+            finalPrimaryMask = compositedPrimaryMask
+        }
+        
         // STORE REFINEMENT MASK FOR BACKGROUND EXCLUSION:
         cameraManager.refinementMaskForBackground = compositedRefinementMask
         
-        print("🔍 Unified Mask Application:")
-        print("   Primary mask exists: \(compositedPrimaryMask != nil)")
+        print("🍽️ Unified Mask Application:")
+        print("   Primary mask exists: \(finalPrimaryMask != nil)")
         print("   Refinement mask exists: \(compositedRefinementMask != nil)")
         
         // First apply primary mask to get cropped CSV
-        if let primaryMask = compositedPrimaryMask {
+        if let primaryMask = finalPrimaryMask {
             print("📦 Applying primary mask...")
             cameraManager.cropDepthDataWithMask(primaryMask, imageFrame: imageFrame, depthImageSize: depthImage.size, skipExpansion: hasPenDrawnMasks) {
                 // This runs when cropping is actually complete
