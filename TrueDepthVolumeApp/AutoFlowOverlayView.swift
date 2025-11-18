@@ -115,6 +115,8 @@ struct UnifiedSegmentOverlayView: View {
     @State private var refinementMaskImage: UIImage?
     @State private var primaryMaskHistory: [UIImage] = []
     @State private var refinementMaskHistory: [UIImage] = []
+    @State private var primaryCompositeMask: UIImage?
+    @State private var refinementCompositeMask: UIImage?
     @State private var tapLocation: CGPoint = .zero
     @State private var imageDisplaySize: CGSize = .zero
     @State private var isDepthEncoded = false
@@ -469,20 +471,24 @@ struct UnifiedSegmentOverlayView: View {
     private func updateDisplayMasks() {
         // Composite and color primary masks (blue) for display
         if !primaryMaskHistory.isEmpty {
-            if let composited = recompositeMaskHistory(primaryMaskHistory) {
+            // Use cached composite or recomposite from scratch (only on undo)
+            if let composited = primaryCompositeMask {
                 self.primaryMaskImage = colorMask(composited, with: UIColor(red: 0/255, green: 122/255, blue: 255/255, alpha: 1.0))
             }
         } else {
             self.primaryMaskImage = nil
+            self.primaryCompositeMask = nil
         }
         
         // Composite and color refinement masks (yellow) for display
         if !refinementMaskHistory.isEmpty {
-            if let composited = recompositeMaskHistory(refinementMaskHistory) {
+            // Use cached composite or recomposite from scratch (only on undo)
+            if let composited = refinementCompositeMask {
                 self.refinementMaskImage = colorMask(composited, with: UIColor(red: 255/255, green: 204/255, blue: 0/255, alpha: 1.0))
             }
         } else {
             self.refinementMaskImage = nil
+            self.refinementCompositeMask = nil
         }
     }
     
@@ -550,12 +556,24 @@ struct UnifiedSegmentOverlayView: View {
                 // Store raw masks from SAM (no coloring yet)
                 if let depthMask = depthMask {
                     primaryMaskHistory.append(depthMask)
-                    maskOrder.append("primary") // Add this line
+                    maskOrder.append("primary")
+                    // INCREMENTAL COMPOSITE
+                    if let existing = primaryCompositeMask {
+                        primaryCompositeMask = compositeMasks(existing, with: depthMask)
+                    } else {
+                        primaryCompositeMask = depthMask
+                    }
                 }
                 
                 if let photoMask = photoMask {
                     refinementMaskHistory.append(photoMask)
-                    maskOrder.append("refinement") // Add this line
+                    maskOrder.append("refinement")
+                    // INCREMENTAL COMPOSITE
+                    if let existing = refinementCompositeMask {
+                        refinementCompositeMask = compositeMasks(existing, with: photoMask)
+                    } else {
+                        refinementCompositeMask = photoMask
+                    }
                 }
                 
                 // Update display versions ONCE
@@ -584,9 +602,21 @@ struct UnifiedSegmentOverlayView: View {
             if isDrawingPrimary {
                 primaryMaskHistory.append(mask)
                 maskOrder.append("primary")
+                // INCREMENTAL COMPOSITE
+                if let existing = primaryCompositeMask {
+                    primaryCompositeMask = compositeMasks(existing, with: mask)
+                } else {
+                    primaryCompositeMask = mask
+                }
             } else {
                 refinementMaskHistory.append(mask)
                 maskOrder.append("refinement")
+                // INCREMENTAL COMPOSITE
+                if let existing = refinementCompositeMask {
+                    refinementCompositeMask = compositeMasks(existing, with: mask)
+                } else {
+                    refinementCompositeMask = mask
+                }
             }
             
             updateDisplayMasks()
@@ -633,11 +663,23 @@ struct UnifiedSegmentOverlayView: View {
                 if let depthMask = depthMask {
                     primaryMaskHistory.append(depthMask)
                     maskOrder.append("primary")
+                    // INCREMENTAL COMPOSITE
+                    if let existing = primaryCompositeMask {
+                        primaryCompositeMask = compositeMasks(existing, with: depthMask)
+                    } else {
+                        primaryCompositeMask = depthMask
+                    }
                 }
                 
                 if let photoMask = photoMask {
                     refinementMaskHistory.append(photoMask)
                     maskOrder.append("refinement")
+                    // INCREMENTAL COMPOSITE
+                    if let existing = refinementCompositeMask {
+                        refinementCompositeMask = compositeMasks(existing, with: photoMask)
+                    } else {
+                        refinementCompositeMask = photoMask
+                    }
                 }
                 
                 updateDisplayMasks()
@@ -758,8 +800,12 @@ struct UnifiedSegmentOverlayView: View {
         
         if lastMaskType == "refinement" && !refinementMaskHistory.isEmpty {
             refinementMaskHistory.removeLast()
+            // Recomposite from scratch (acceptable since undo is infrequent)
+            refinementCompositeMask = recompositeMaskHistory(refinementMaskHistory)
         } else if lastMaskType == "primary" && !primaryMaskHistory.isEmpty {
             primaryMaskHistory.removeLast()
+            // Recomposite from scratch (acceptable since undo is infrequent)
+            primaryCompositeMask = recompositeMaskHistory(primaryMaskHistory)
         }
         
         updateDisplayMasks()
@@ -775,10 +821,12 @@ struct UnifiedSegmentOverlayView: View {
         refinementMaskHistory = []
         primaryMaskImage = nil
         refinementMaskImage = nil
+        primaryCompositeMask = nil
+        refinementCompositeMask = nil
         tapLocation = .zero
         showConfirmButton = false
         hasPenDrawnMasks = false
-        maskOrder = [] // Add this line
+        maskOrder = []
     }
     
     // MARK: - Expand Primary Mask to Include Refinement
@@ -926,11 +974,11 @@ struct UnifiedSegmentOverlayView: View {
 
     
     private func applyMasks() {
-        // Composite and color brown for processing (done only once here)
+        // Use cached composite masks (already composited incrementally)
         let compositedPrimaryMask: UIImage?
         if !primaryMaskHistory.isEmpty {
-            if let composited = recompositeMaskHistory(primaryMaskHistory) {
-                compositedPrimaryMask = colorMask(composited, with: UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 1.0))
+            if let cached = primaryCompositeMask {
+                compositedPrimaryMask = colorMask(cached, with: UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 1.0))
             } else {
                 compositedPrimaryMask = nil
             }
@@ -940,8 +988,8 @@ struct UnifiedSegmentOverlayView: View {
         
         let compositedRefinementMask: UIImage?
         if !refinementMaskHistory.isEmpty {
-            if let composited = recompositeMaskHistory(refinementMaskHistory) {
-                compositedRefinementMask = colorMask(composited, with: UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 1.0))
+            if let cached = refinementCompositeMask {
+                compositedRefinementMask = colorMask(cached, with: UIColor(red: 139/255, green: 69/255, blue: 19/255, alpha: 1.0))
             } else {
                 compositedRefinementMask = nil
             }
