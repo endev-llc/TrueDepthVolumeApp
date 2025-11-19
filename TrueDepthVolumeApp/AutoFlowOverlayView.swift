@@ -137,6 +137,12 @@ struct UnifiedSegmentOverlayView: View {
     @State private var boxCurrentPoint: CGPoint?
     @State private var isDrawingBox = false
     
+    // Multi-point prompt states
+    @State private var isMultiPointMode = false
+    @State private var multiPoints: [CGPoint] = []
+    @State private var multiPointLabels: [Float32] = []  // 1.0 for positive, 0.0 for negative
+    @State private var isPositivePoint = true  // Toggle for positive/negative points
+    
     // Add initializer to accept SAM managers from parent
     init(depthImage: UIImage, photo: UIImage?, cameraManager: CameraManager, onComplete: @escaping (URL?) -> Void, onDismiss: @escaping () -> Void) {
         self.depthImage = depthImage
@@ -169,23 +175,62 @@ struct UnifiedSegmentOverlayView: View {
                     
                     Spacer()
                     
-                    // Pen mode toggle with color indicator
-                    Button(action: {
-                        isPenMode.toggle()
-                    }) {
-                        Image(systemName: isPenMode ? "pencil.circle.fill" : "pencil.circle")
-                            .font(.title2)
-                            .foregroundColor(isPenMode ? (isDrawingPrimary ? .blue : .yellow) : .white)
+                    // Multi-point mode button (replaces pen mode)
+                    if !isMultiPointMode {
+                        Button(action: {
+                            isMultiPointMode = true
+                            isPenMode = false
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "hand.point.up.left.fill")
+                                    .font(.body)
+                                Text("Select Multiple")
+                                    .font(.caption)
+                            }
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.blue.opacity(0.3))
+                            .cornerRadius(8)
+                        }
                     }
                     
-                    // Toggle between primary/refinement pen mode
-                    if isPenMode {
-                        Button(action: { isDrawingPrimary.toggle() }) {
-                            Text(isDrawingPrimary ? "P" : "R")
-                                .font(.headline)
-                                .foregroundColor(isDrawingPrimary ? .blue : .yellow)
-                                .frame(width: 30, height: 30)
-                                .background(Circle().stroke(isDrawingPrimary ? Color.blue : Color.yellow, lineWidth: 2))
+                    // Multi-point mode controls
+                    if isMultiPointMode {
+                        // Positive/Negative toggle
+                        Button(action: { isPositivePoint.toggle() }) {
+                            HStack(spacing: 4) {
+                                Circle()
+                                    .fill(isPositivePoint ? Color.green : Color.red)
+                                    .frame(width: 12, height: 12)
+                                Text(isPositivePoint ? "+" : "−")
+                                    .font(.headline)
+                                    .foregroundColor(.white)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.gray.opacity(0.3))
+                            .cornerRadius(8)
+                        }
+                        
+                        // Cancel button
+                        Button(action: {
+                            isMultiPointMode = false
+                            multiPoints = []
+                            multiPointLabels = []
+                        }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.title2)
+                                .foregroundColor(.gray)
+                        }
+                        
+                        // Confirm button (only show if points exist)
+                        if !multiPoints.isEmpty {
+                            Button(action: { applyMultiPointMasks() }) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.title2)
+                                    .foregroundColor(.green)
+                            }
                         }
                     }
                     
@@ -316,8 +361,22 @@ struct UnifiedSegmentOverlayView: View {
                             )
                         }
                         
+                        // Multi-point indicators
+                        if isMultiPointMode {
+                            ForEach(0..<multiPoints.count, id: \.self) { index in
+                                Circle()
+                                    .fill(multiPointLabels[index] > 0.5 ? Color.green : Color.red)
+                                    .frame(width: 16, height: 16)
+                                    .overlay(
+                                        Circle()
+                                            .stroke(Color.white, lineWidth: 2)
+                                    )
+                                    .position(multiPoints[index])
+                            }
+                        }
+                        
                         // Tap indicator
-                        if tapLocation != .zero && !isPenMode {
+                        if tapLocation != .zero && !isPenMode && !isMultiPointMode {
                             Circle()
                                 .fill(Color.red)
                                 .frame(width: 12, height: 12)
@@ -329,7 +388,10 @@ struct UnifiedSegmentOverlayView: View {
                     .simultaneousGesture(
                         DragGesture(minimumDistance: 0)
                             .onChanged { value in
-                                if isPenMode && imageFrame.contains(value.location) {
+                                if isMultiPointMode {
+                                    // Don't do anything on drag in multi-point mode
+                                    return
+                                } else if isPenMode && imageFrame.contains(value.location) {
                                     // Pen drawing mode
                                     if !isDrawing {
                                         isDrawing = true
@@ -358,7 +420,14 @@ struct UnifiedSegmentOverlayView: View {
                                 }
                             }
                             .onEnded { value in
-                                if isPenMode && isDrawing {
+                                if isMultiPointMode {
+                                    // Handle multi-point tap
+                                    let dragDistance = hypot(value.location.x - value.startLocation.x,
+                                                           value.location.y - value.startLocation.y)
+                                    if dragDistance <= 10 && imageFrame.contains(value.location) {
+                                        handleMultiPointTap(at: value.location)
+                                    }
+                                } else if isPenMode && isDrawing {
                                     finishDrawing()
                                 } else if !isPenMode {
                                     let dragDistance = hypot(value.location.x - value.startLocation.x,
@@ -426,7 +495,13 @@ struct UnifiedSegmentOverlayView: View {
     
     // MARK: - Helper Functions
     private func getInstructionText() -> String {
-        if isPenMode {
+        if isMultiPointMode {
+            if multiPoints.isEmpty {
+                return "Tap to add \(isPositivePoint ? "positive (green)" : "negative (red)") points. Toggle +/− to switch."
+            } else {
+                return "\(multiPoints.count) point(s) added. Tap ✓ to apply or × to cancel."
+            }
+        } else if isPenMode {
             if isDrawingPrimary {
                 return "Draw on primary object (blue). Tap P/R to switch to refinement mode."
             } else {
@@ -582,6 +657,75 @@ struct UnifiedSegmentOverlayView: View {
                 if depthMask != nil || photoMask != nil {
                     self.showConfirmButton = true
                 }
+            }
+        }
+    }
+    
+    // MARK: - Multi-Point Functions
+    private func handleMultiPointTap(at location: CGPoint) {
+        multiPoints.append(location)
+        multiPointLabels.append(isPositivePoint ? 1.0 : 0.0)
+    }
+    
+    private func applyMultiPointMasks() {
+        guard !multiPoints.isEmpty else { return }
+        
+        // Convert display points to relative coordinates
+        let relativePoints = multiPoints.map { point -> CGPoint in
+            let relativeX = point.x - imageFrame.minX
+            let relativeY = point.y - imageFrame.minY
+            return CGPoint(x: relativeX, y: relativeY)
+        }
+        
+        Task {
+            // Generate masks from both images using multi-point prompts
+            async let depthMaskTask = samManagerDepth.generateMask(
+                withPoints: relativePoints,
+                labels: multiPointLabels,
+                in: imageDisplaySize
+            )
+            async let photoMaskTask = samManagerPhoto.generateMask(
+                withPoints: relativePoints,
+                labels: multiPointLabels,
+                in: imageDisplaySize
+            )
+            
+            let (depthMask, photoMask) = await (depthMaskTask, photoMaskTask)
+            
+            await MainActor.run {
+                // Store raw masks
+                if let depthMask = depthMask {
+                    primaryMaskHistory.append(depthMask)
+                    maskOrder.append("primary")
+                    // INCREMENTAL COMPOSITE
+                    if let existing = primaryCompositeMask {
+                        primaryCompositeMask = compositeMasks(existing, with: depthMask)
+                    } else {
+                        primaryCompositeMask = depthMask
+                    }
+                }
+                
+                if let photoMask = photoMask {
+                    refinementMaskHistory.append(photoMask)
+                    maskOrder.append("refinement")
+                    // INCREMENTAL COMPOSITE
+                    if let existing = refinementCompositeMask {
+                        refinementCompositeMask = compositeMasks(existing, with: photoMask)
+                    } else {
+                        refinementCompositeMask = photoMask
+                    }
+                }
+                
+                updateDisplayMasks()
+                
+                if depthMask != nil || photoMask != nil {
+                    self.showConfirmButton = true
+                }
+                
+                // Exit multi-point mode
+                isMultiPointMode = false
+                multiPoints = []
+                multiPointLabels = []
             }
         }
     }

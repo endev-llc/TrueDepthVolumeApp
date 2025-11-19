@@ -282,6 +282,93 @@ class MobileSAMManager: ObservableObject {
         return try ORTValue(tensorData: tensorData, elementType: .float, shape: shape)
     }
     
+    // MARK: - Multi-Point Mask Generation
+    func generateMask(withPoints points: [CGPoint], labels: [Float32], in imageDisplaySize: CGSize, outputSize: CGSize? = nil) async -> UIImage? {
+        let startTime = CFAbsoluteTimeGetCurrent()
+        
+        guard let decoderSession = decoderSession,
+              let imageEmbeddings = currentImageEmbeddings else {
+            await MainActor.run {
+                errorMessage = "Models not ready or image not encoded"
+            }
+            return nil
+        }
+        
+        guard points.count == labels.count, !points.isEmpty else {
+            await MainActor.run {
+                errorMessage = "Points and labels must have same count and not be empty"
+            }
+            return nil
+        }
+        
+        await MainActor.run {
+            isLoading = true
+        }
+        
+        do {
+            // Convert all UI coordinates to model coordinates
+            let modelCoords = points.map { convertUICoordinateToModelCoordinate($0, displaySize: imageDisplaySize) }
+            
+            // Create prompt tensors for multiple points
+            let pointCoords = try createMultiPointCoordsTensor(points: modelCoords)
+            let pointLabels = try createMultiPointLabelsTensor(labels: labels)
+            let maskInput = try createMaskInputTensor()
+            let hasMaskInput = try createHasMaskInputTensor()
+            let origImSize = try createOrigImageSizeTensor()
+            
+            // Prepare inputs
+            let inputs: [String: ORTValue] = [
+                "image_embeddings": imageEmbeddings,
+                "point_coords": pointCoords,
+                "point_labels": pointLabels,
+                "mask_input": maskInput,
+                "has_mask_input": hasMaskInput,
+                "orig_im_size": origImSize
+            ]
+            
+            // Run inference
+            let outputs = try decoderSession.run(withInputs: inputs, outputNames: ["masks", "iou_predictions", "low_res_masks"], runOptions: nil)
+            
+            await MainActor.run {
+                isLoading = false
+            }
+            
+            // Convert mask to UIImage
+            if let masks = outputs["masks"], let iouPreds = outputs["iou_predictions"] {
+                let result = try createMaskImage(from: masks, iouPredictions: iouPreds, targetSize: outputSize)
+                let totalTime = CFAbsoluteTimeGetCurrent() - startTime
+                print("⏱️ TOTAL generateMask (multi-point) took: \(String(format: "%.3f", totalTime))s")
+                return result
+            }
+            
+        } catch {
+            await MainActor.run {
+                errorMessage = "Multi-point mask generation failed: \(error.localizedDescription)"
+                isLoading = false
+            }
+        }
+        
+        return nil
+    }
+
+    private func createMultiPointCoordsTensor(points: [CGPoint]) throws -> ORTValue {
+        var coords: [Float32] = []
+        for point in points {
+            coords.append(Float32(point.x))
+            coords.append(Float32(point.y))
+        }
+        let shape: [NSNumber] = [1, NSNumber(value: points.count), 2]  // [batch, num_points, 2]
+        let tensorData = NSMutableData(bytes: &coords, length: coords.count * MemoryLayout<Float32>.size)
+        return try ORTValue(tensorData: tensorData, elementType: .float, shape: shape)
+    }
+
+    private func createMultiPointLabelsTensor(labels: [Float32]) throws -> ORTValue {
+        var labelsCopy = labels
+        let shape: [NSNumber] = [1, NSNumber(value: labels.count)]  // [batch, num_points]
+        let tensorData = NSMutableData(bytes: &labelsCopy, length: labelsCopy.count * MemoryLayout<Float32>.size)
+        return try ORTValue(tensorData: tensorData, elementType: .float, shape: shape)
+    }
+    
     // MARK: - Image Preprocessing
     private func preprocessImage(_ image: UIImage) -> UIImage {
         // Mobile SAM expects 1024x1024 - draw resized image at origin (0,0)
