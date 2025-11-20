@@ -19,12 +19,6 @@ struct TrueDepthVolumeApp: App {
 struct MainTabView: View {
     var body: some View {
         TabView {
-            MobileSAMView()
-                .tabItem {
-                    Image(systemName: "photo.circle")
-                    Text("MobileSAM")
-                }
-            
             TrueDepthCameraView()
                 .tabItem {
                     Image(systemName: "camera.fill")
